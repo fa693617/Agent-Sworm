@@ -8,7 +8,7 @@ export default defineConfig(({mode}) => {
   return {
     plugins: [react(), tailwindcss()],
     define: {
-      'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
+      // Removed hardcoded process.env.GEMINI_API_KEY to prevent leaks to GitHub
     },
     resolve: {
       alias: {

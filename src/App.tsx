@@ -215,8 +215,8 @@ async function callAI(ai, history, curMsg, mentions, replyTxt, isPhase2, otherRe
   }
   
   if (ai.apiType==="gemini") {
-    const apiKey = ai.apiKey || process.env.GEMINI_API_KEY;
-    if (!apiKey) throw new Error("Gemini API key is missing.");
+    const apiKey = ai.apiKey || import.meta.env.VITE_GEMINI_API_KEY;
+    if (!apiKey) throw new Error("Gemini API key is missing. Please add VITE_GEMINI_API_KEY to your environment variables.");
     const genAI = new GoogleGenAI({ apiKey });
     const contents = buildGemHist(history, ai.id);
     contents.push({ role: "user", parts: [{ text: content }] });
@@ -274,7 +274,6 @@ function AuthScreen({onLogin}){
   const[pw,setPw]=useState("");
   const[err,setErr]=useState("");
   const[busy,setBusy]=useState(false);
-  const[showDebug,setShowDebug]=useState(false);
 
   const submit=async()=>{
     setErr("");if(busy)return;
@@ -372,19 +371,6 @@ function AuthScreen({onLogin}){
           </svg>
           Continue with Google
         </button>
-
-        <button onClick={() => setShowDebug(!showDebug)} style={{background:"transparent", border:"none", color:C.txt3, fontSize:"10px", marginTop:"10px", cursor:"pointer", textDecoration:"underline"}}>
-          {showDebug ? "Hide Debug Info" : "Show Debug Info"}
-        </button>
-
-        {showDebug && (
-          <div style={{marginTop:"10px", padding:"10px", background:C.surf2, borderRadius:C.rSm, fontSize:"10px", color:C.txt2, textAlign:"left", wordBreak:"break-all"}}>
-            <div><strong>Project:</strong> {auth.app.options.projectId}</div>
-            <div><strong>DB ID:</strong> {db.databaseId}</div>
-            <div><strong>Domain:</strong> {auth.app.options.authDomain}</div>
-            <div style={{marginTop:"5px", color:C.acc}}>Current URL: {window.location.origin}</div>
-          </div>
-        )}
       </div>
     </div>
   </div>;
