@@ -1,0 +1,77 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile information",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Firebase Auth UID" },
+        "name": { "type": "string", "description": "Display name" },
+        "email": { "type": "string", "description": "User email" },
+        "joinedAt": { "type": "string", "format": "date-time", "description": "When the user joined" }
+      },
+      "required": ["id", "name", "email"]
+    },
+    "Chat": {
+      "title": "Chat",
+      "description": "A chat session with multiple AI responses",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique chat ID" },
+        "userId": { "type": "string", "description": "Owner UID" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Creation timestamp" },
+        "messages": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string" },
+              "type": { "type": "string", "enum": ["user", "ai", "ai_followup"] },
+              "content": { "type": "string" },
+              "timestamp": { "type": "string", "format": "date-time" },
+              "aiId": { "type": "string" },
+              "aiName": { "type": "string" },
+              "groupId": { "type": "string" },
+              "replyToId": { "type": "string" },
+              "mentions": { "type": "array", "items": { "type": "string" } },
+              "loading": { "type": "boolean" },
+              "error": { "type": "string" }
+            }
+          }
+        }
+      },
+      "required": ["id", "userId", "createdAt", "messages"]
+    },
+    "AI": {
+      "title": "AI Configuration",
+      "description": "A configured AI provider for a user",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique AI ID" },
+        "userId": { "type": "string", "description": "Owner UID" },
+        "name": { "type": "string", "description": "User-defined name for this AI" },
+        "apiType": { "type": "string", "enum": ["openai", "anthropic", "gemini"] },
+        "endpoint": { "type": "string" },
+        "model": { "type": "string" },
+        "apiKey": { "type": "string", "description": "Encrypted or plain API key" },
+        "colorIdx": { "type": "integer" },
+        "providerId": { "type": "string" }
+      },
+      "required": ["id", "userId", "name", "apiType", "model"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profile documents"
+    },
+    "/chats/{chatId}": {
+      "schema": "Chat",
+      "description": "Chat session documents"
+    },
+    "/ais/{aiId}": {
+      "schema": "AI",
+      "description": "AI configuration documents"
+    }
+  }
+}

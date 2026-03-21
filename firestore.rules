@@ -1,0 +1,132 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Document ID: userId (Firebase Auth UID)
+    // Fields:
+    //   - id: string (required, immutable) - Firebase Auth UID
+    //   - name: string (required, min 1, max 100) - Display name
+    //   - email: string (required, valid email) - User email
+    //   - joinedAt: string (required, ISO 8601) - When the user joined
+    //
+    // Collection: chats
+    // Document ID: chatId (Unique ID)
+    // Fields:
+    //   - id: string (required, immutable) - Unique chat ID
+    //   - userId: string (required, immutable) - Owner UID
+    //   - createdAt: string (required, ISO 8601) - Creation timestamp
+    //   - messages: list (required, max 500) - List of message objects
+    //
+    // Collection: ais
+    // Document ID: aiId (Unique ID)
+    // Fields:
+    //   - id: string (required, immutable) - Unique AI ID
+    //   - userId: string (required, immutable) - Owner UID
+    //   - name: string (required, min 1, max 100) - User-defined name
+    //   - apiType: string (required, enum: ['openai', 'anthropic', 'gemini'])
+    //   - endpoint: string (optional, valid URL)
+    //   - model: string (required)
+    //   - apiKey: string (optional)
+    //   - colorIdx: number (optional, integer)
+    //   - providerId: string (optional)
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isDocOwner() {
+      return isAuthenticated() && request.auth.uid == resource.data.userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+          (request.auth.token.email == "fa693617@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    function isValidEmail(email) {
+      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    function isValidDateString(dateStr) {
+      return dateStr is string && dateStr.matches("^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}.*Z?$");
+    }
+
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidUser(data) {
+      return hasOnlyAllowedFields(['id', 'name', 'email', 'joinedAt', 'role']) &&
+             data.id is string && data.id == request.auth.uid &&
+             data.name is string && data.name.size() > 0 && data.name.size() <= 100 &&
+             data.email is string && isValidEmail(data.email) &&
+             data.joinedAt is string && isValidDateString(data.joinedAt);
+    }
+
+    function isValidChat(data) {
+      return hasOnlyAllowedFields(['id', 'userId', 'createdAt', 'messages']) &&
+             data.id is string && data.id.size() > 0 &&
+             data.userId is string && data.userId == request.auth.uid &&
+             data.createdAt is string && isValidDateString(data.createdAt) &&
+             data.messages is list && data.messages.size() <= 500;
+    }
+
+    function isValidAI(data) {
+      return hasOnlyAllowedFields(['id', 'userId', 'name', 'apiType', 'endpoint', 'model', 'apiKey', 'colorIdx', 'providerId']) &&
+             data.id is string && data.id.size() > 0 &&
+             data.userId is string && data.userId == request.auth.uid &&
+             data.name is string && data.name.size() > 0 && data.name.size() <= 100 &&
+             data.apiType in ['openai', 'anthropic', 'gemini'] &&
+             data.model is string && data.model.size() > 0;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow create: if isOwner(userId) && isValidUser(request.resource.data) && (request.resource.data.role == 'user' || isAdmin());
+      allow update: if isOwner(userId) && isValidUser(request.resource.data) && (request.resource.data.role == resource.data.role || isAdmin());
+    }
+
+    match /chats/{chatId} {
+      allow read: if isDocOwner() || isAdmin();
+      allow create: if isAuthenticated() && isValidChat(request.resource.data);
+      allow update: if isDocOwner() && isValidChat(request.resource.data);
+      allow delete: if isDocOwner() || isAdmin();
+    }
+
+    match /ais/{aiId} {
+      allow read: if isDocOwner() || isAdmin();
+      allow create: if isAuthenticated() && isValidAI(request.resource.data);
+      allow update: if isDocOwner() && isValidAI(request.resource.data);
+      allow delete: if isDocOwner() || isAdmin();
+    }
+
+    // Default deny
+    match /{path=**} {
+      allow read, write: if false;
+    }
+  }
+}

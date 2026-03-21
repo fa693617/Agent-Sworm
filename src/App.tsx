@@ -1,0 +1,857 @@
+import { useState, useRef, useEffect, useCallback, Component, ReactNode } from "react";
+import { GoogleGenAI } from "@google/genai";
+import { 
+  signInWithEmailAndPassword, 
+  createUserWithEmailAndPassword, 
+  onAuthStateChanged, 
+  signOut,
+  updateProfile,
+  GoogleAuthProvider,
+  signInWithPopup
+} from "firebase/auth";
+import { 
+  collection, 
+  doc, 
+  setDoc, 
+  getDoc, 
+  getDocs, 
+  query, 
+  where, 
+  onSnapshot, 
+  deleteDoc, 
+  orderBy,
+  limit,
+  Timestamp
+} from "firebase/firestore";
+import { auth, db } from "./firebase";
+
+const C = {
+  sideBg:"#171717", mainBg:"#1e1e1e", surf:"#252525", surf2:"#2e2e2e",
+  bdr:"rgba(255,255,255,0.07)", bdr2:"rgba(255,255,255,0.12)",
+  txt:"#efefef", txt2:"#9a9a9a", txt3:"#585858",
+  acc:"#0062FF", accBg:"rgba(0, 98, 255, 0.13)", accBdr:"rgba(0, 98, 255, 0.3)",
+  r:"14px", rMd:"10px", rSm:"7px",
+};
+const PALETTES=[
+  {fg:"#da7756",bg:"rgba(218,119,86,0.12)",bdr:"rgba(218,119,86,0.3)"},
+  {fg:"#5b9cf5",bg:"rgba(91,156,245,0.12)",bdr:"rgba(91,156,245,0.3)"},
+  {fg:"#19c37d",bg:"rgba(25,195,125,0.12)",bdr:"rgba(25,195,125,0.3)"},
+  {fg:"#c9a03a",bg:"rgba(201,160,58,0.12)",bdr:"rgba(201,160,58,0.3)"},
+  {fg:"#9b7ff5",bg:"rgba(155,127,245,0.12)",bdr:"rgba(155,127,245,0.3)"},
+  {fg:"#f56592",bg:"rgba(245,101,146,0.12)",bdr:"rgba(245,101,146,0.3)"},
+  {fg:"#3ecfcf",bg:"rgba(62,207,207,0.12)",bdr:"rgba(62,207,207,0.3)"},
+  {fg:"#aac43a",bg:"rgba(170,196,58,0.12)",bdr:"rgba(170,196,58,0.3)"},
+];
+const pal=idx=>PALETTES[idx%PALETTES.length];
+
+// ── Error Handling ────────────────────────────────────────────────────────
+enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId: string | undefined;
+    email: string | null | undefined;
+    emailVerified: boolean | undefined;
+    isAnonymous: boolean | undefined;
+    tenantId: string | null | undefined;
+    providerInfo: {
+      providerId: string;
+      displayName: string | null;
+      email: string | null;
+      photoUrl: string | null;
+    }[];
+  }
+}
+
+function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: auth.currentUser?.uid,
+      email: auth.currentUser?.email,
+      emailVerified: auth.currentUser?.emailVerified,
+      isAnonymous: auth.currentUser?.isAnonymous,
+      tenantId: auth.currentUser?.tenantId,
+      providerInfo: auth.currentUser?.providerData.map(provider => ({
+        providerId: provider.providerId,
+        displayName: provider.displayName,
+        email: provider.email,
+        photoUrl: provider.photoURL
+      })) || []
+    },
+    operationType,
+    path
+  }
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
+}
+
+class ErrorBoundary extends Component<{children: ReactNode}, {hasError: boolean, error: any}> {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+  static getDerivedStateFromError(error) { return { hasError: true, error }; }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{padding: "2rem", background: C.mainBg, color: C.txt, height: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center"}}>
+          <h2 style={{marginBottom: "1rem"}}>Something went wrong</h2>
+          <pre style={{background: C.surf, padding: "1rem", borderRadius: C.rMd, fontSize: "12px", maxWidth: "100%", overflowX: "auto", color: "#f6465d"}}>
+            {this.state.error?.message || String(this.state.error)}
+          </pre>
+          <button className="btn btn-acc" style={{marginTop: "1rem"}} onClick={() => window.location.reload()}>Reload App</button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+// ── Provider catalogue ────────────────────────────────────────────────────
+const PROVIDERS_CATALOGUE = [
+  {
+    id:"openai", name:"OpenAI", logo:"O", color:"#19c37d", colorBg:"rgba(25,195,125,0.12)", colorBdr:"rgba(25,195,125,0.3)",
+    apiType:"openai", endpoint:"https://api.openai.com/v1/chat/completions",
+    keyHint:"Get API key at platform.openai.com → API Keys", keyLink:"https://platform.openai.com/api-keys",
+    about:"Most popular AI. GPT-4o is their best everyday model. o1 for complex reasoning.",
+    models:[
+      {id:"gpt-4o",        label:"GPT-4o",         desc:"Best everyday model · fast & smart"},
+      {id:"gpt-4o-mini",   label:"GPT-4o mini",    desc:"Cheaper · great for simple tasks"},
+      {id:"gpt-4-turbo",   label:"GPT-4 Turbo",    desc:"Powerful · longer context"},
+      {id:"o1",            label:"o1",              desc:"Best for complex reasoning"},
+      {id:"o1-mini",       label:"o1 mini",         desc:"Fast reasoning model"},
+      {id:"o3-mini",       label:"o3 mini",         desc:"Latest reasoning model"},
+    ],
+  },
+  {
+    id:"anthropic", name:"Anthropic", logo:"A", color:"#da7756", colorBg:"rgba(218,119,86,0.12)", colorBdr:"rgba(218,119,86,0.3)",
+    apiType:"anthropic", endpoint:"https://api.anthropic.com/v1/messages",
+    keyHint:"Get API key at console.anthropic.com → API Keys", keyLink:"https://console.anthropic.com/",
+    about:"Makers of Claude. Excellent at writing, analysis, and coding.",
+    models:[
+      {id:"claude-3-5-sonnet-20241022",   label:"Claude 3.5 Sonnet",  desc:"Best balance of speed & intelligence"},
+      {id:"claude-3-opus-20240229",     label:"Claude 3 Opus",    desc:"Most powerful Claude model"},
+      {id:"claude-3-5-haiku-20241022",  label:"Claude 3.5 Haiku", desc:"Fastest & most affordable"},
+    ],
+  },
+  {
+    id:"google", name:"Google Gemini", logo:"G", color:"#5b9cf5", colorBg:"rgba(91,156,245,0.12)", colorBdr:"rgba(91,156,245,0.3)",
+    apiType:"gemini", endpoint:"",
+    keyHint:"Free API key at aistudio.google.com → Get API Key", keyLink:"https://aistudio.google.com/",
+    about:"Google's AI. Very generous free tier. Gemini Flash is fast and free.",
+    models:[
+      {id:"gemini-2.0-flash",   label:"Gemini 2.0 Flash",   desc:"Latest · fast · free tier available"},
+      {id:"gemini-1.5-flash",   label:"Gemini 1.5 Flash",   desc:"Very fast · free tier"},
+      {id:"gemini-1.5-pro",     label:"Gemini 1.5 Pro",     desc:"Most capable · longer context"},
+      {id:"gemini-2.0-flash-thinking-exp", label:"Gemini 2.0 Thinking", desc:"Experimental reasoning model"},
+    ],
+  },
+  {
+    id:"groq", name:"Groq", logo:"G", color:"#c9a03a", colorBg:"rgba(201,160,58,0.12)", colorBdr:"rgba(201,160,58,0.3)",
+    apiType:"openai", endpoint:"https://api.groq.com/openai/v1/chat/completions",
+    keyHint:"Free API key at console.groq.com → API Keys", keyLink:"https://console.groq.com/",
+    about:"Extremely fast inference. Free tier. Runs open source models like Llama, Mixtral, Gemma.",
+    models:[
+      {id:"llama-3.3-70b-versatile",  label:"Llama 3.3 70B",   desc:"Best quality · free"},
+      {id:"llama-3.1-8b-instant",     label:"Llama 3.1 8B",    desc:"Fastest · free · great for quick tasks"},
+      {id:"mixtral-8x7b-32768",       label:"Mixtral 8x7B",    desc:"Good balance · free"},
+      {id:"gemma2-9b-it",             label:"Gemma 2 9B",      desc:"Google's open model · free"},
+    ],
+  },
+  {
+    id:"deepseek", name:"DeepSeek", logo:"D", color:"#3ecfcf", colorBg:"rgba(62,207,207,0.12)", colorBdr:"rgba(62,207,207,0.3)",
+    apiType:"openai", endpoint:"https://api.deepseek.com/v1/chat/completions",
+    keyHint:"Get API key at platform.deepseek.com → API Keys", keyLink:"https://platform.deepseek.com/",
+    about:"Matches GPT-4 quality at a fraction of the cost. Very popular for coding.",
+    models:[
+      {id:"deepseek-chat",      label:"DeepSeek V3",      desc:"Best everyday model · very affordable"},
+      {id:"deepseek-reasoner",  label:"DeepSeek R1",      desc:"Advanced reasoning · matches o1"},
+    ],
+  },
+  {
+    id:"ollama", name:"Ollama (Local)", logo:"◎", color:"#3ecfcf", colorBg:"rgba(62,207,207,0.12)", colorBdr:"rgba(62,207,207,0.3)",
+    apiType:"openai", endpoint:"http://localhost:11434/v1/chat/completions",
+    keyHint:"No API key needed. Install Ollama from ollama.ai and run: ollama pull llama3", keyLink:"https://ollama.ai/",
+    about:"Run AI completely free on your own computer. No internet needed. Private.",
+    models:[
+      {id:"llama3",         label:"Llama 3",       desc:"Meta's model · good all-rounder"},
+      {id:"llama3:70b",     label:"Llama 3 70B",   desc:"Larger · smarter · needs more RAM"},
+      {id:"mistral",        label:"Mistral 7B",    desc:"Fast · good for coding"},
+      {id:"deepseek-r1",    label:"DeepSeek R1",   desc:"Reasoning model · local"},
+    ],
+  },
+];
+
+const gid  = () => Math.random().toString(36).substr(2,9);
+const tStr = iso => new Date(iso).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});
+const chatLabel = msgs => {
+  const f=msgs.find(m=>m.type==="user");
+  return f ? f.content.slice(0,44)+(f.content.length>44?"…":"") : "New chat";
+};
+
+// ── API calls ─────────────────────────────────────────────────────────────
+async function callAI(ai, history, curMsg, mentions, replyTxt, isPhase2, otherResp) {
+  const sys = buildSys(ai.name, mentions, ai.id, isPhase2, otherResp);
+  const content = (replyTxt?`[Replying to: "${replyTxt.slice(0,80)}"]\n\n`:"")+curMsg;
+
+  if (ai.apiType==="anthropic") {
+    const msgs=buildAnthHist(history,ai.id); msgs.push({role:"user",content});
+    const r=await fetch(ai.endpoint,{method:"POST",headers:{"Content-Type":"application/json", "x-api-key": ai.apiKey, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true"},
+      body:JSON.stringify({model:ai.model,max_tokens:900,system:sys,messages:msgs})});
+    if(!r.ok)throw new Error(await eMsg(r));
+    const d=await r.json(); if(d.error)throw new Error(d.error.message||JSON.stringify(d.error));
+    return d.content[0].text;
+  }
+  
+  if (ai.apiType==="gemini") {
+    const apiKey = ai.apiKey || process.env.GEMINI_API_KEY;
+    if (!apiKey) throw new Error("Gemini API key is missing.");
+    const genAI = new GoogleGenAI({ apiKey });
+    const contents = buildGemHist(history, ai.id);
+    contents.push({ role: "user", parts: [{ text: content }] });
+    
+    const response = await genAI.models.generateContent({
+      model: ai.model,
+      contents,
+      config: {
+        systemInstruction: sys,
+      }
+    });
+    return response.text;
+  }
+
+  const msgs=[{role:"system",content:sys},...buildOAIHist(history,ai.id),{role:"user",content}];
+  const hdrs={"Content-Type":"application/json"};
+  if(ai.apiKey)hdrs["Authorization"]=`Bearer ${ai.apiKey}`;
+  const r=await fetch(ai.endpoint,{method:"POST",headers:hdrs,body:JSON.stringify({model:ai.model,max_tokens:900,messages:msgs})});
+  if(!r.ok)throw new Error(await eMsg(r));
+  const d=await r.json(); if(d.error)throw new Error(d.error.message||JSON.stringify(d.error));
+  return d.choices[0].message.content;
+}
+
+async function eMsg(r){try{const d=await r.json();return d.error?.message||`HTTP ${r.status}`;}catch{return `HTTP ${r.status}`;}}
+function buildSys(nm,mentions,aiId,isPhase2,otherResp){
+  let s=`You are ${nm} in AGENTSWORM, an AI group conference where multiple AIs answer simultaneously. Be helpful and direct.`;
+  if(mentions?.includes(aiId))s+=` The user specifically @mentioned you.`;
+  else if(mentions?.length)s+=` The user @mentioned others. Still contribute but be concise.`;
+  if(isPhase2){s+=`\n\nOthers responded. Only reply if you can correct a mistake, add crucial missing info, or a meaningfully different view. 1-3 sentences max. Otherwise reply exactly: SKIP`;if(otherResp)s+=`\n\nOther responses:\n${otherResp}`;}
+  return s;
+}
+function buildTurns(h){const t=[];let c=null;for(const m of h){if(m.type==="user"){if(c)t.push(c);c={u:m.content,gid:m.groupId,res:[]};}if(c&&(m.type==="ai"||m.type==="ai_followup")&&m.groupId===c.gid)c.res.push(m);}if(c)t.push(c);return t;}
+function buildAnthHist(h,id){return buildTurns(h).flatMap(t=>{const ctx=t.res.filter(x=>x.aiId!==id).map(x=>`${x.aiName}: ${x.content}`).join(" | ");const my=t.res.find(x=>x.aiId===id);return my?[{role:"user",content:ctx?t.u+"\n[Others: "+ctx+"]":t.u},{role:"assistant",content:my.content}]:[];});}
+function buildGemHist(h,id){return buildTurns(h).flatMap(t=>{const ctx=t.res.filter(x=>x.aiId!==id).map(x=>`${x.aiName}: ${x.content}`).join(" | ");const my=t.res.find(x=>x.aiId===id);return my?[{role:"user",parts:[{text:ctx?t.u+"\n[Others: "+ctx+"]":t.u}]},{role:"model",parts:[{text:my.content}]}]:[];});}
+function buildOAIHist(h,id){return buildTurns(h).flatMap(t=>{const ctx=t.res.filter(x=>x.aiId!==id).map(x=>`${x.aiName}: ${x.content}`).join(" | ");const my=t.res.find(x=>x.aiId===id);return my?[{role:"user",content:ctx?t.u+"\n[Others: "+ctx+"]":t.u},{role:"assistant",content:my.content}]:[];});}
+
+function Av({ai,size=28}){
+  const p=ai?pal(ai.colorIdx||0):PALETTES[0];
+  return <div style={{width:size,height:size,borderRadius:"50%",background:p.bg,border:`1px solid ${p.bdr}`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:size*.38,fontWeight:"600",color:p.fg,flexShrink:0}}>{ai?.name?.[0]?.toUpperCase()||"?"}</div>;
+}
+function Mentions({text,ais}){
+  return <>{text.split(/(@\w+)/g).map((p,i)=>{
+    if(!p.startsWith("@"))return <span key={i}>{p}</span>;
+    const a=ais.find(x=>"@"+x.name.toLowerCase()===p.toLowerCase());
+    if(a){const pl=pal(a.colorIdx||0);return <span key={i} className="chip" style={{background:pl.bg,color:pl.fg}}>{p}</span>;}
+    return <span key={i}>{p}</span>;
+  })}</>;
+}
+
+// ── AUTH ──────────────────────────────────────────────────────────────────
+function AuthScreen({onLogin}){
+  const[mode,setMode]=useState("login");
+  const[name,setName]=useState("");
+  const[email,setEmail]=useState("");
+  const[pw,setPw]=useState("");
+  const[err,setErr]=useState("");
+  const[busy,setBusy]=useState(false);
+
+  const submit=async()=>{
+    setErr("");if(busy)return;
+    if(!email.trim()||!pw.trim()){setErr("Email and password required.");return;}
+    if(mode==="register"&&!name.trim()){setErr("Name required.");return;}
+    setBusy(true);
+    try{
+      if(mode==="register"){
+        const cred = await createUserWithEmailAndPassword(auth, email.trim(), pw);
+        await updateProfile(cred.user, { displayName: name.trim() });
+        const u = { id: cred.user.uid, name: name.trim(), email: cred.user.email, joinedAt: new Date().toISOString(), role: 'user' };
+        await setDoc(doc(db, "users", u.id), u);
+        onLogin(u);
+      }else{
+        const cred = await signInWithEmailAndPassword(auth, email.trim(), pw);
+        const uDoc = await getDoc(doc(db, "users", cred.user.uid));
+        onLogin(uDoc.exists() ? uDoc.data() : { id: cred.user.uid, name: cred.user.displayName, email: cred.user.email });
+      }
+    }catch(e: any){
+      setErr(e.message || "Authentication failed.");
+    }
+    setBusy(true);
+    setBusy(false);
+  };
+
+  const loginWithGoogle = async () => {
+    setErr("");
+    if (busy) return;
+    setBusy(true);
+    try {
+      const provider = new GoogleAuthProvider();
+      const cred = await signInWithPopup(auth, provider);
+      const uDoc = await getDoc(doc(db, "users", cred.user.uid));
+      if (!uDoc.exists()) {
+        const u = { 
+          id: cred.user.uid, 
+          name: cred.user.displayName || cred.user.email?.split("@")[0] || "User", 
+          email: cred.user.email, 
+          joinedAt: new Date().toISOString(), 
+          role: 'user' 
+        };
+        await setDoc(doc(db, "users", u.id), u);
+        onLogin(u);
+      } else {
+        onLogin(uDoc.data());
+      }
+    } catch (e: any) {
+      setErr(e.message || "Google sign-in failed.");
+    }
+    setBusy(false);
+  };
+
+  return <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",padding:"1.5rem",background:C.mainBg,fontFamily:"'Inter',sans-serif"}}>
+    <div style={{width:"100%",maxWidth:"380px"}}>
+      <div style={{textAlign:"center",marginBottom:"2rem"}}>
+        <div style={{fontSize:"11px",letterSpacing:".12em",textTransform:"uppercase",color:C.txt3,marginBottom:"10px",fontWeight:"500"}}>AI Conference Platform</div>
+        <div style={{fontSize:"32px",fontWeight:"600",color:C.txt,letterSpacing:"-.02em",marginBottom:"6px"}}>AgentSworm</div>
+        <div style={{fontSize:"13px",color:C.txt2,lineHeight:"1.5"}}>One room. Every AI. All at once.</div>
+        <div style={{fontSize:"11px",color:C.acc,marginTop:"4px",fontWeight:"500"}}>AgentSworm.com</div>
+      </div>
+      <div style={{background:C.surf,border:`1px solid ${C.bdr2}`,borderRadius:"16px",padding:"1.75rem",display:"flex",flexDirection:"column",gap:"12px"}}>
+        <div style={{display:"flex",gap:"4px",background:C.surf2,padding:"4px",borderRadius:C.rMd}}>
+          {["login","register"].map(m=><button key={m} onClick={()=>{setMode(m);setErr("");}}
+            style={{flex:1,padding:"7px",fontSize:"13px",fontWeight:"500",cursor:"pointer",border:"none",borderRadius:C.rSm,fontFamily:"'Inter',sans-serif",transition:"all .15s",background:mode===m?C.acc:"transparent",color:mode===m?"#fff":C.txt3}}>
+            {m==="login"?"Sign in":"Register"}
+          </button>)}
+        </div>
+        {mode==="register"&&<input className="inp" value={name} onChange={e=>setName(e.target.value)} placeholder="Your name" autoFocus onKeyDown={e=>e.key==="Enter"&&submit()}/>}
+        <input className="inp" value={email} onChange={e=>setEmail(e.target.value)} placeholder="Email address" type="email" autoFocus={mode==="login"} onKeyDown={e=>e.key==="Enter"&&submit()}/>
+        <input className="inp" value={pw} onChange={e=>setPw(e.target.value)} placeholder="Password" type="password" onKeyDown={e=>e.key==="Enter"&&submit()}/>
+        {err&&<div style={{fontSize:"12px",color:"#f6465d",padding:"9px 11px",background:"rgba(246,70,93,.1)",borderRadius:C.rSm,lineHeight:"1.4"}}>{err}</div>}
+        <button className="btn btn-acc" onClick={submit} disabled={busy} style={{width:"100%",padding:"11px",fontSize:"14px",marginTop:"2px"}}>{busy?"…":mode==="login"?"Sign in →":"Create account →"}</button>
+        
+        <div style={{display:"flex",alignItems:"center",gap:"10px",margin:"8px 0"}}>
+          <div style={{flex:1,height:"1px",background:C.bdr}}/>
+          <div style={{fontSize:"11px",color:C.txt3,fontWeight:"500"}}>OR</div>
+          <div style={{flex:1,height:"1px",background:C.bdr}}/>
+        </div>
+
+        <button className="btn" onClick={loginWithGoogle} disabled={busy} 
+          style={{width:"100%",padding:"10px",fontSize:"13px",display:"flex",alignItems:"center",justifyContent:"center",gap:"8px",background:C.surf2}}>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
+            <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
+            <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z" fill="#FBBC05"/>
+            <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
+          </svg>
+          Continue with Google
+        </button>
+      </div>
+    </div>
+  </div>;
+}
+
+// ── ADD AI SETTINGS PANEL ─────────────────────────────────────────────────
+function SettingsPanel({ais, onAdd, onRemove, onClose}) {
+  const[step,setStep]=useState("grid"); // grid | configure
+  const[selected,setSelected]=useState(null); // provider from catalogue
+  const[apiKey,setApiKey]=useState("");
+  const[model,setModel]=useState("");
+  const[err,setErr]=useState("");
+
+  const openProvider=prov=>{
+    setSelected(prov);
+    setApiKey("");
+    setModel(prov.models[0]?.id||"");
+    setErr("");
+    setStep("configure");
+  };
+
+  const addAI=()=>{
+    setErr("");
+    if(!apiKey.trim()&&selected.id!=="ollama"){setErr("API key is required.");return;}
+    if(!model){setErr("Please select a model.");return;}
+    const modelLabel=selected.models.find(m=>m.id===model)?.label||model;
+    const ai={
+      id:gid(),
+      userId: auth.currentUser?.uid,
+      name:`${selected.name} · ${modelLabel}`,
+      apiType:selected.apiType,
+      endpoint:selected.endpoint,
+      model,
+      apiKey:apiKey.trim(),
+      colorIdx:ais.length,
+      providerId:selected.id,
+    };
+    onAdd(ai);
+    setStep("grid");
+    setSelected(null);
+    setApiKey("");
+    setModel("");
+  };
+
+  return <div style={{height:"100%",display:"flex",flexDirection:"column"}}>
+    <div style={{padding:"14px 16px",borderBottom:`1px solid ${C.bdr}`,display:"flex",alignItems:"center",gap:"10px",flexShrink:0}}>
+      {step==="configure"&&<button className="btn" onClick={()=>setStep("grid")}
+        style={{fontSize:"12px",padding:"4px 10px"}}>← Back</button>}
+      <div style={{flex:1,fontSize:"13px",fontWeight:"600",color:C.txt}}>
+        {step==="grid"?"Connect an AI":selected?.name}
+      </div>
+      <button className="btn" onClick={onClose} style={{fontSize:"12px",padding:"4px 9px"}}>✕</button>
+    </div>
+
+    <div className="sc" style={{flex:1,overflowY:"auto",padding:"14px"}}>
+      {step==="grid"&&<>
+        {ais.length>0&&<>
+          <div style={{fontSize:"11px",color:C.txt3,fontWeight:"500",letterSpacing:".06em",textTransform:"uppercase",marginBottom:"8px"}}>Connected ({ais.length})</div>
+          {ais.map((ai,i)=>{
+            const p=pal(ai.colorIdx||i);
+            const prov=PROVIDERS_CATALOGUE.find(x=>x.id===ai.providerId);
+            return <div key={ai.id} style={{display:"flex",alignItems:"center",gap:"10px",padding:"10px 12px",
+              background:p.bg,border:`1px solid ${p.bdr}`,borderRadius:C.rMd,marginBottom:"7px"}}>
+              <Av ai={ai} size={26}/>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{fontSize:"13px",fontWeight:"500",color:C.txt,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{ai.name}</div>
+                <div style={{fontSize:"11px",color:C.txt3}}>{prov?.name||ai.apiType}</div>
+              </div>
+              <button className="btn" onClick={()=>onRemove(ai.id)}
+                style={{fontSize:"10px",padding:"3px 8px",color:"#f6465d",borderColor:"rgba(246,70,93,.3)",background:"rgba(246,70,93,.08)",flexShrink:0}}>Remove</button>
+            </div>;
+          })}
+          <div style={{borderTop:`1px solid ${C.bdr}`,margin:"14px 0"}}/>
+        </>}
+
+        <div style={{fontSize:"11px",color:C.txt3,fontWeight:"500",letterSpacing:".06em",textTransform:"uppercase",marginBottom:"10px"}}>Choose a provider</div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"8px"}}>
+          {PROVIDERS_CATALOGUE.map(prov=>{
+            const alreadyAdded=ais.filter(a=>a.providerId===prov.id).length;
+            return <div key={prov.id} className="prov-card" onClick={()=>openProvider(prov)}
+              style={{background:prov.colorBg,borderColor:prov.colorBdr}}>
+              <div style={{display:"flex",alignItems:"center",gap:"8px",marginBottom:"7px"}}>
+                <div style={{width:32,height:32,borderRadius:"8px",background:prov.colorBg,
+                  border:`1px solid ${prov.colorBdr}`,display:"flex",alignItems:"center",
+                  justifyContent:"center",fontSize:"15px",fontWeight:"700",color:prov.color,flexShrink:0}}>
+                  {prov.logo}
+                </div>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{fontSize:"13px",fontWeight:"600",color:C.txt,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{prov.name}</div>
+                  {alreadyAdded>0&&<div style={{fontSize:"10px",color:prov.color}}>{alreadyAdded} connected</div>}
+                </div>
+              </div>
+              <div style={{fontSize:"11px",color:C.txt3,lineHeight:"1.4"}}>{prov.about}</div>
+            </div>;
+          })}
+        </div>
+      </>}
+
+      {step==="configure"&&selected&&<>
+        <div style={{display:"flex",alignItems:"center",gap:"12px",padding:"14px",
+          background:selected.colorBg,border:`1px solid ${selected.colorBdr}`,borderRadius:C.rMd,marginBottom:"16px"}}>
+          <div style={{width:40,height:40,borderRadius:"10px",background:selected.colorBg,
+            border:`1px solid ${selected.colorBdr}`,display:"flex",alignItems:"center",
+            justifyContent:"center",fontSize:"20px",fontWeight:"700",color:selected.color,flexShrink:0}}>
+            {selected.logo}
+          </div>
+          <div>
+            <div style={{fontSize:"14px",fontWeight:"600",color:C.txt,marginBottom:"3px"}}>{selected.name}</div>
+            <div style={{fontSize:"12px",color:C.txt3,lineHeight:"1.4"}}>{selected.about}</div>
+          </div>
+        </div>
+
+        <div style={{marginBottom:"16px"}}>
+          <div style={{fontSize:"12px",fontWeight:"600",color:C.txt,marginBottom:"8px",
+            display:"flex",alignItems:"center",gap:"6px"}}>
+            <span style={{width:20,height:20,borderRadius:"50%",background:C.acc,display:"flex",
+              alignItems:"center",justifyContent:"center",fontSize:"11px",fontWeight:"700",color:"#fff",flexShrink:0}}>1</span>
+            {selected.id==="ollama"?"No API key needed":"Enter your API key"}
+          </div>
+          {selected.id!=="ollama"?<>
+            <input className="inp" value={apiKey} onChange={e=>setApiKey(e.target.value)}
+              placeholder="Paste your API key here…" type="password"
+              style={{marginBottom:"8px"}}/>
+            <div style={{fontSize:"12px",color:C.txt3,padding:"9px 12px",background:C.surf2,
+              borderRadius:C.rSm,lineHeight:"1.5",display:"flex",alignItems:"flex-start",gap:"6px"}}>
+              <span style={{color:selected.color,flexShrink:0}}>→</span>
+              <span>{selected.keyHint}</span>
+            </div>
+          </>:<div style={{fontSize:"12px",color:C.txt3,padding:"9px 12px",background:C.surf2,
+            borderRadius:C.rSm,lineHeight:"1.5"}}>
+            {selected.keyHint}
+          </div>}
+        </div>
+
+        <div style={{marginBottom:"16px"}}>
+          <div style={{fontSize:"12px",fontWeight:"600",color:C.txt,marginBottom:"8px",
+            display:"flex",alignItems:"center",gap:"6px"}}>
+            <span style={{width:20,height:20,borderRadius:"50%",background:C.acc,display:"flex",
+              alignItems:"center",justifyContent:"center",fontSize:"11px",fontWeight:"700",color:"#fff",flexShrink:0}}>2</span>
+            Choose a model
+          </div>
+          <div style={{display:"flex",flexDirection:"column",gap:"5px"}}>
+            {selected.models.map(m=><button key={m.id} onClick={()=>setModel(m.id)}
+              style={{display:"flex",alignItems:"center",gap:"10px",padding:"10px 12px",
+                borderRadius:C.rSm,cursor:"pointer",border:`1px solid ${model===m.id?selected.colorBdr:C.bdr}`,
+                background:model===m.id?selected.colorBg:"transparent",transition:"all .15s",
+                fontFamily:"'Inter',sans-serif",textAlign:"left"}}>
+              <div style={{width:14,height:14,borderRadius:"50%",border:`2px solid ${model===m.id?selected.color:C.txt3}`,
+                display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
+                {model===m.id&&<div style={{width:6,height:6,borderRadius:"50%",background:selected.color}}/>}
+              </div>
+              <div style={{flex:1}}>
+                <div style={{fontSize:"13px",fontWeight:"500",color:model===m.id?C.txt:C.txt2}}>{m.label}</div>
+                <div style={{fontSize:"11px",color:C.txt3,marginTop:"1px"}}>{m.desc}</div>
+              </div>
+            </button>)}
+          </div>
+        </div>
+
+        {err&&<div style={{fontSize:"12px",color:"#f6465d",padding:"9px 11px",background:"rgba(246,70,93,.1)",borderRadius:C.rSm,lineHeight:"1.4",marginBottom:"12px"}}>{err}</div>}
+
+        <button className="btn btn-acc" onClick={addAI} style={{width:"100%",padding:"11px",fontSize:"14px"}}>
+          Connect {selected.name} →
+        </button>
+      </>}
+    </div>
+  </div>;
+}
+
+// ── MAIN APP ──────────────────────────────────────────────────────────────
+function AgentSwormApp(){
+  const[ready,setReady]=useState(false);
+  const[user,setUser]=useState(null);
+  const[chats,setChats]=useState([]);
+  const[activeId,setActiveId]=useState(null);
+  const[search,setSearch]=useState("");
+  const[input,setInput]=useState("");
+  const[ais,setAis]=useState([]);
+  const[enabledIds,setEnabledIds]=useState([]);
+  const[loading,setLoading]=useState({});
+  const[phase2,setPhase2]=useState(false);
+  const[replyTo,setReplyTo]=useState(null);
+  const[mentionQ,setMentionQ]=useState(null);
+  const[showSettings,setShowSettings]=useState(false);
+  const[sideOpen,setSideOpen]=useState(true);
+  const bottomRef=useRef(null);
+  const taRef=useRef(null);
+
+  const activeChat=chats.find(c=>c.id===activeId);
+  const isLoading=Object.values(loading).some(Boolean)||phase2;
+  const enabledAIs=ais.filter(a=>enabledIds.includes(a.id));
+
+  // Auth Listener
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, async (u) => {
+      if (u) {
+        const uDoc = await getDoc(doc(db, "users", u.uid));
+        setUser(uDoc.exists() ? uDoc.data() : { id: u.uid, name: u.displayName, email: u.email });
+      } else {
+        setUser(null);
+        setChats([]);
+        setAis([]);
+      }
+      setReady(true);
+    });
+    return unsub;
+  }, []);
+
+  // Firestore Listeners
+  useEffect(() => {
+    if (!user) return;
+
+    // Listen for Chats
+    const chatsQ = query(collection(db, "chats"), where("userId", "==", user.id), orderBy("createdAt", "desc"));
+    const unsubChats = onSnapshot(chatsQ, (snap) => {
+      const data = snap.docs.map(d => d.data());
+      setChats(data);
+    }, (err) => handleFirestoreError(err, OperationType.LIST, "chats"));
+
+    // Listen for AIs
+    const aisQ = query(collection(db, "ais"), where("userId", "==", user.id));
+    const unsubAIs = onSnapshot(aisQ, (snap) => {
+      const data = snap.docs.map(d => d.data());
+      setAis(data);
+      // Auto-enable all AIs if none are enabled yet
+      setEnabledIds(prev => prev.length === 0 ? data.map(a => a.id) : prev);
+    }, (err) => handleFirestoreError(err, OperationType.LIST, "ais"));
+
+    return () => { unsubChats(); unsubAIs(); };
+  }, [user]);
+
+  useEffect(()=>{bottomRef.current?.scrollIntoView({behavior:"smooth"});}, [activeChat?.messages]);
+
+  const logout=()=>signOut(auth);
+
+  const addAI=async ai=>{
+    try {
+      await setDoc(doc(db, "ais", ai.id), ai);
+      setEnabledIds(p=>[...p,ai.id]);
+    } catch(e) { handleFirestoreError(e, OperationType.WRITE, "ais"); }
+  };
+
+  const removeAI=async id=>{
+    try {
+      await deleteDoc(doc(db, "ais", id));
+      setEnabledIds(p=>p.filter(x=>x!==id));
+    } catch(e) { handleFirestoreError(e, OperationType.DELETE, "ais"); }
+  };
+
+  const toggleAI=(id,on)=>setEnabledIds(p=>on?[...p,id]:p.filter(x=>x!==id));
+
+  const newChat=async()=>{
+    const c={id:gid(),userId: user.id, createdAt:new Date().toISOString(),messages:[]};
+    try {
+      await setDoc(doc(db, "chats", c.id), c);
+      setActiveId(c.id);setInput("");setReplyTo(null);
+      setTimeout(()=>taRef.current?.focus(),80);
+    } catch(e) { handleFirestoreError(e, OperationType.WRITE, "chats"); }
+  };
+
+  const onInputChange=e=>{
+    const v=e.target.value;setInput(v);
+    const m=v.slice(0,e.target.selectionStart).match(/@(\w*)$/);
+    setMentionQ(m?{q:m[1].toLowerCase(),start:e.target.selectionStart-m[0].length}:null);
+  };
+  const insertMention=nm=>{
+    if(mentionQ===null)return;
+    const after=input.slice(taRef.current?.selectionStart||input.length);
+    setInput(input.slice(0,mentionQ.start)+"@"+nm+" "+after);
+    setMentionQ(null);setTimeout(()=>taRef.current?.focus(),40);
+  };
+  const mentionList=mentionQ!==null?ais.filter(a=>a.name.toLowerCase().includes(mentionQ.q)):[];
+
+  const send=async()=>{
+    if(!input.trim()||isLoading||enabledAIs.length===0)return;
+    const msg=input.trim();setInput("");setReplyTo(null);setMentionQ(null);
+    let chat=activeChat;
+    const chatId=chat ? chat.id : gid();
+    const groupId=gid();
+    const mentioned=[];for(const m of msg.matchAll(/@(\w+)/g)){const a=ais.find(x=>x.name.toLowerCase().includes(m[1].toLowerCase()));if(a)mentioned.push(a.id);}
+    const replyTxt=replyTo?.content||null;
+    const userMsg={id:gid(),type:"user",content:msg,timestamp:new Date().toISOString(),groupId,replyToId:replyTo?.id||null,mentions:mentioned};
+    const placeholders=enabledAIs.map(ai=>({id:gid(),type:"ai",aiId:ai.id,aiName:ai.name,content:null,error:null,loading:true,timestamp:new Date().toISOString(),groupId}));
+    
+    const newMessages = [...(chat?.messages || []), userMsg, ...placeholders];
+    const updChat = chat ? { ...chat, messages: newMessages } : { id: chatId, userId: user.id, createdAt: new Date().toISOString(), messages: newMessages };
+    
+    try {
+      await setDoc(doc(db, "chats", chatId), updChat);
+      setActiveId(chatId);
+    } catch(e) { handleFirestoreError(e, OperationType.WRITE, "chats"); }
+
+    const nl={};enabledAIs.forEach(a=>nl[a.id]=true);setLoading(nl);
+    const prevMsgs=(chat?.messages || []);
+    const p1: Record<string, {content: string | null, error: string | null}> = {};
+    
+    await Promise.allSettled(enabledAIs.map(async ai=>{
+      const upd=async(content: string | null, error: string | null)=>{
+        p1[ai.id]={content,error};
+        try {
+          const currentChatDoc = await getDoc(doc(db, "chats", chatId));
+          if (currentChatDoc.exists()) {
+            const currentChat = currentChatDoc.data();
+            const updatedMessages = currentChat.messages.map(m => 
+              m.groupId === groupId && m.type === "ai" && m.aiId === ai.id 
+                ? { ...m, content, error, loading: false } 
+                : m
+            );
+            await setDoc(doc(db, "chats", chatId), { ...currentChat, messages: updatedMessages });
+          }
+        } catch(e) { console.error("Update error", e); }
+        setLoading(prev=>({...prev,[ai.id]:false}));
+      };
+      try{
+        const resp = await callAI(ai,prevMsgs,msg,mentioned,replyTxt,false,null);
+        await upd(resp, null);
+      }catch(e: any){
+        await upd(null, e.message || String(e));
+      }
+    }));
+
+    const p1Lines=Object.entries(p1).filter(([,v])=>v?.content).map(([id,v])=>`${ais.find(a=>a.id===id)?.name||id}: ${v.content}`);
+    if(p1Lines.length>1){
+      setPhase2(true);
+      await Promise.allSettled(enabledAIs.map(async ai=>{
+        if(!p1[ai.id]?.content)return;
+        const others=p1Lines.filter(l=>!l.startsWith(ai.name+":")).join("\n\n");
+        try{
+          const resp=await callAI(ai,prevMsgs,msg,mentioned,replyTxt,true,others);
+          if(resp&&!resp.trim().toUpperCase().startsWith("SKIP")){
+            const fu={id:gid(),type:"ai_followup",aiId:ai.id,aiName:ai.name,content:resp.replace(/^SKIP\s*/i,"").trim(),error:null,loading:false,timestamp:new Date().toISOString(),groupId};
+            const currentChatDoc = await getDoc(doc(db, "chats", chatId));
+            if (currentChatDoc.exists()) {
+              const currentChat = currentChatDoc.data();
+              await setDoc(doc(db, "chats", chatId), { ...currentChat, messages: [...currentChat.messages, fu] });
+            }
+          }
+        }catch(e){ console.error("Phase 2 error", e); }
+      }));
+      setPhase2(false);
+    }
+  };
+
+  if(!ready)return <div style={{background:C.mainBg,height:"100vh",display:"flex",alignItems:"center",justifyContent:"center",fontFamily:"'Inter',sans-serif",color:C.txt3,fontSize:"13px"}}>Loading…</div>;
+  if(!user)return <AuthScreen onLogin={setUser}/>;
+
+  const filtered=chats.filter(c=>!search||chatLabel(c.messages).toLowerCase().includes(search.toLowerCase()));
+
+  return (
+    <div style={{display:"flex",height:"100vh",background:C.mainBg,fontFamily:"'Inter',sans-serif",color:C.txt,overflow:"hidden"}}>
+      <div className="sidebar" style={{width:sideOpen?255:0,flexShrink:0,background:C.sideBg,borderRight:sideOpen?`1px solid ${C.bdr}`:"none",display:"flex",flexDirection:"column",overflow:"hidden",opacity:sideOpen?1:0}}>
+        <div style={{padding:"14px 12px 10px",flexShrink:0}}>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"14px"}}>
+            <span style={{fontSize:"17px",fontWeight:"600",color:C.txt,letterSpacing:"-.02em"}}>AgentSworm</span>
+            <button className="btn btn-ghost" onClick={newChat} style={{fontSize:"12px",padding:"5px 11px"}}>+ New</button>
+          </div>
+          <div style={{position:"relative"}}>
+            <span style={{position:"absolute",left:"10px",top:"50%",transform:"translateY(-50%)",color:C.txt3,fontSize:"14px",pointerEvents:"none"}}>⌕</span>
+            <input className="inp" value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search chats…" style={{paddingLeft:"30px",background:C.surf,fontSize:"12px"}}/>
+          </div>
+        </div>
+        <div className="sc" style={{flex:1,overflowY:"auto",padding:"0 0 6px"}}>
+          {filtered.length===0&&<div style={{padding:"2rem 16px",fontSize:"13px",color:C.txt3,textAlign:"center",lineHeight:"1.7"}}>{search?"No chats found.":"No chats yet.\nStart a new one."}</div>}
+          {filtered.map(c=><div key={c.id} className={`chat-row${c.id===activeId?" active":""}`} onClick={()=>setActiveId(c.id)}>
+            <div style={{fontSize:"13px",fontWeight:"500",color:c.id===activeId?C.txt:C.txt2,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",marginBottom:"3px"}}>{chatLabel(c.messages)}</div>
+            <div style={{fontSize:"11px",color:C.txt3}}>{c.messages.filter(m=>m.type==="user").length} msg · {new Date(c.createdAt).toLocaleDateString([],{month:"short",day:"numeric"})}</div>
+          </div>)}
+        </div>
+        <div style={{padding:"10px 12px",borderTop:`1px solid ${C.bdr}`,display:"flex",alignItems:"center",justifyContent:"space-between",flexShrink:0}}>
+          <div style={{display:"flex",alignItems:"center",gap:"8px",overflow:"hidden"}}>
+            <div style={{width:28,height:28,borderRadius:"50%",background:C.accBg,border:`1px solid ${C.accBdr}`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:"12px",fontWeight:"600",color:C.acc,flexShrink:0}}>{user.name?.[0]?.toUpperCase()||"U"}</div>
+            <div style={{overflow:"hidden"}}>
+              <div style={{fontSize:"12px",fontWeight:"500",color:C.txt,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{user.name}</div>
+              <div style={{fontSize:"10px",color:C.txt3,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{user.email}</div>
+            </div>
+          </div>
+          <div style={{display:"flex",gap:"4px",flexShrink:0}}>
+            <button className="btn" onClick={()=>setShowSettings(!showSettings)} style={{fontSize:"12px",padding:"5px 8px",...(showSettings?{background:C.accBg,borderColor:C.accBdr,color:C.acc}:{})}}>⚙</button>
+            <button className="btn" onClick={logout} style={{fontSize:"12px",padding:"5px 8px"}}>↩</button>
+          </div>
+        </div>
+      </div>
+
+      <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden",position:"relative"}}>
+        {showSettings&&<div style={{position:"absolute",top:0,right:0,width:360,height:"100%",zIndex:30,background:C.sideBg,borderLeft:`1px solid ${C.bdr}`,display:"flex",flexDirection:"column"}}>
+          <SettingsPanel ais={ais} onAdd={addAI} onRemove={removeAI} onClose={()=>setShowSettings(false)}/>
+        </div>}
+
+        <div style={{padding:"9px 1rem",borderBottom:`1px solid ${C.bdr}`,background:C.sideBg,flexShrink:0,display:"flex",alignItems:"center",gap:"10px",minHeight:"48px",flexWrap:"wrap"}}>
+          <button className="toggle-btn" onClick={()=>setSideOpen(p=>!p)} title={sideOpen?"Hide sidebar":"Show sidebar"}>{sideOpen?"◀":"▶"}</button>
+          <div style={{fontSize:"13px",fontWeight:"500",color:C.txt,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:"180px",flex:"0 0 auto"}}>{activeChat?chatLabel(activeChat.messages):"AgentSworm"}</div>
+          {ais.length>0&&<><div style={{width:"1px",height:"14px",background:C.bdr2,flexShrink:0}}/>
+          <div style={{display:"flex",gap:"5px",flexWrap:"wrap",alignItems:"center",flex:1}}>
+            {ais.map(ai=>{const p=pal(ai.colorIdx||0);const on=enabledIds.includes(ai.id);
+              return <button key={ai.id} className="ai-toggle" onClick={()=>toggleAI(ai.id,!on)} style={{borderColor:on?p.bdr:C.bdr,background:on?p.bg:"transparent",color:on?p.fg:C.txt3}}>
+                <span style={{width:5,height:5,borderRadius:"50%",background:on?p.fg:C.txt3,flexShrink:0}}/>{ai.name}
+              </button>;})}
+          </div></>}
+          {ais.length===0&&<button className="btn btn-ghost" onClick={()=>setShowSettings(true)} style={{fontSize:"12px",padding:"5px 12px"}}>⚙ Connect an AI to start</button>}
+        </div>
+
+        <div className="sc" style={{flex:1,overflowY:"auto",padding:"1.5rem",display:"flex",flexDirection:"column",gap:"1.25rem"}}>
+          {!activeChat&&<div style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:"10px",paddingTop:"6rem"}}>
+            <div style={{fontSize:"30px",fontWeight:"600",color:C.txt,letterSpacing:"-.02em",opacity:.2}}>AgentSworm</div>
+            <div style={{fontSize:"13px",color:C.txt3,textAlign:"center",lineHeight:"1.6"}}>{ais.length===0?"Connect your first AI using the button above":"Start a new chat from the sidebar"}</div>
+            {ais.length>0&&<button className="btn btn-ghost" onClick={newChat} style={{fontSize:"13px",padding:"9px 20px",marginTop:"4px"}}>+ New chat</button>}
+            {ais.length===0&&<button className="btn btn-ghost" onClick={()=>setShowSettings(true)} style={{fontSize:"13px",padding:"9px 20px",marginTop:"4px"}}>⚙ Connect an AI</button>}
+          </div>}
+
+          {activeChat?.messages.map(msg=>{
+            if(msg.type==="user"){
+              const rMsg=msg.replyToId?activeChat.messages.find(m=>m.id===msg.replyToId):null;
+              return (
+                <div key={msg.id} className="msg-wrap" style={{display:"flex",justifyContent:"flex-end"}}>
+                  <div style={{maxWidth:"70%"}}>
+                    {rMsg&&<div style={{fontSize:"12px",color:C.txt3,padding:"6px 10px",background:C.surf,borderRadius:"8px 8px 0 0",borderLeft:`2px solid ${C.acc}`,lineHeight:"1.4",marginBottom:"1px"}}>
+                      <span style={{fontSize:"10px",color:C.acc,fontWeight:"500",display:"block",marginBottom:"1px"}}>↩ {rMsg.aiName||""}</span>
+                      {rMsg.content?.slice(0,80)}{rMsg.content?.length>80?"…":""}
+                    </div>}
+                    <div style={{background:C.surf2,padding:"11px 14px",borderRadius:rMsg?"0 10px 4px 10px":"14px 14px 4px 14px"}}>
+                      <div style={{fontSize:"14px",color:C.txt,lineHeight:"1.65",whiteSpace:"pre-wrap"}}><Mentions text={msg.content} ais={ais}/></div>
+                      <div style={{fontSize:"10px",color:C.txt3,marginTop:"4px",textAlign:"right"}}>{tStr(msg.timestamp)}</div>
+                    </div>
+                  </div>
+                </div>
+              );
+            }
+            const ai=ais.find(a=>a.id===msg.aiId);const p=ai?pal(ai.colorIdx||0):PALETTES[0];const isF=msg.type==="ai_followup";
+            return (
+              <div key={msg.id} className="msg-wrap" style={{display:"flex",gap:"10px",alignItems:"flex-start",paddingLeft:isF?"38px":"0"}}>
+                <Av ai={ai} size={28}/>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{display:"flex",alignItems:"center",gap:"8px",marginBottom:"5px",flexWrap:"wrap"}}>
+                    <span style={{fontSize:"13px",fontWeight:"500",color:p.fg}}>{msg.aiName||ai?.name||"AI"}</span>
+                    {isF&&<span style={{fontSize:"10px",padding:"1px 6px",borderRadius:"999px",background:p.bg,color:p.fg,border:`1px solid ${p.bdr}`,fontWeight:"500"}}>follow-up</span>}
+                    {msg.loading&&<span style={{display:"inline-flex",alignItems:"center",gap:"2px"}}><span className="dot"/><span className="dot"/><span className="dot"/></span>}
+                    {!msg.loading&&(msg.content||msg.error)&&<span style={{fontSize:"10px",color:C.txt3}}>{tStr(msg.timestamp)}</span>}
+                  </div>
+                  {msg.content&&<><div style={{fontSize:"14px",color:C.txt,lineHeight:"1.75",whiteSpace:"pre-wrap",marginBottom:"6px"}}><Mentions text={msg.content} ais={ais}/></div>
+                    <button className="reply-btn btn" onClick={()=>setReplyTo(msg)} style={{fontSize:"11px",padding:"3px 9px",opacity:0,transition:"opacity .15s"}}>↩ Reply</button></>}
+                  {msg.error&&<div style={{fontSize:"13px",color:"#f6465d",padding:"9px 12px",background:"rgba(246,70,93,.08)",borderRadius:C.rSm,lineHeight:"1.5"}}>{msg.error}</div>}
+                </div>
+              </div>
+            );
+          })}
+          {phase2&&<div style={{display:"flex",alignItems:"center",gap:"8px",paddingLeft:"38px"}}>
+            <span style={{fontSize:"11px",color:C.txt3,fontStyle:"italic"}}>AIs are discussing…</span>
+            <span className="dot"/><span className="dot"/><span className="dot"/>
+          </div>}
+          <div ref={bottomRef}/>
+        </div>
+
+        <div style={{padding:"12px 1.5rem",borderTop:`1px solid ${C.bdr}`,background:C.sideBg,flexShrink:0,position:"relative"}}>
+          {replyTo&&<div style={{display:"flex",alignItems:"center",gap:"8px",padding:"7px 12px",background:C.surf,borderRadius:C.rSm,marginBottom:"8px",borderLeft:`2px solid ${C.acc}`}}>
+            <div style={{flex:1,fontSize:"12px",color:C.txt3,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+              <span style={{color:C.acc,fontWeight:"500"}}>{replyTo.aiName}: </span>{replyTo.content?.slice(0,80)}{replyTo.content?.length>80?"…":""}
+            </div>
+            <button onClick={()=>setReplyTo(null)} style={{background:"none",border:"none",color:C.txt3,cursor:"pointer",fontSize:"16px",lineHeight:1,padding:"0 2px"}}>×</button>
+          </div>}
+          {mentionQ!==null&&mentionList.length>0&&<div style={{position:"absolute",bottom:"100%",left:"1.5rem",right:"1.5rem",background:C.surf,border:`1px solid ${C.bdr2}`,borderRadius:C.rMd,padding:"8px",marginBottom:"4px",display:"flex",gap:"6px",flexWrap:"wrap",boxShadow:"0 -8px 32px rgba(0,0,0,.35)",zIndex:10}}>
+            {mentionList.map(ai=>{const p=pal(ai.colorIdx||0);return <button key={ai.id} onClick={()=>insertMention(ai.name)}
+              style={{display:"flex",alignItems:"center",gap:"7px",padding:"7px 11px",border:`1px solid ${p.bdr}`,borderRadius:"9px",cursor:"pointer",background:p.bg,color:p.fg,fontSize:"13px",fontWeight:"500",fontFamily:"'Inter',sans-serif"}}>
+              <Av ai={ai} size={20}/>{ai.name}
+            </button>;})}
+          </div>}
+          <div style={{display:"flex",gap:"8px",alignItems:"flex-end"}}>
+            <textarea ref={taRef} value={input} onChange={onInputChange}
+              onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();send();}if(e.key==="Escape"){setMentionQ(null);setReplyTo(null);}}}
+              placeholder={enabledAIs.length>0?`Message ${enabledAIs.length} AI${enabledAIs.length>1?"s":""} · @ to mention one`:"Connect an AI to start chatting"}
+              disabled={isLoading||enabledAIs.length===0} rows={2} className="inp"
+              style={{flex:1,resize:"none",fontSize:"14px",lineHeight:"1.6",padding:"11px 14px",fontFamily:"'Inter',sans-serif",background:C.surf}}/>
+            <button className="btn btn-acc" onClick={send} disabled={isLoading||!input.trim()||enabledAIs.length===0}
+              style={{padding:"11px 22px",fontSize:"14px",fontWeight:"500",whiteSpace:"nowrap",alignSelf:"stretch",borderRadius:C.rSm}}>
+              {isLoading?"…":"Send"}
+            </button>
+          </div>
+          <div style={{fontSize:"11px",color:C.txt3,marginTop:"7px",display:"flex",gap:"10px",flexWrap:"wrap"}}>
+            <span>Enter to send</span><span>·</span><span>Shift+Enter new line</span><span>·</span><span>@ to mention a specific AI</span><span>·</span><span>hover a message to quote it</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default function App() {
+  return (
+    <ErrorBoundary>
+      <AgentSwormApp />
+    </ErrorBoundary>
+  );
+}
