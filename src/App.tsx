@@ -33,10 +33,10 @@ import {
 import { auth, db } from "./firebase";
 
 const C = {
-  sideBg:"#171717", mainBg:"#1e1e1e", surf:"#252525", surf2:"#2e2e2e",
-  bdr:"rgba(255,255,255,0.07)", bdr2:"rgba(255,255,255,0.12)",
-  txt:"#efefef", txt2:"#9a9a9a", txt3:"#585858",
-  acc:"#0062FF", accBg:"rgba(0, 98, 255, 0.13)", accBdr:"rgba(0, 98, 255, 0.3)",
+  sideBg:"var(--side-bg)", mainBg:"var(--main-bg)", surf:"var(--surf)", surf2:"var(--surf2)",
+  bdr:"var(--bdr)", bdr2:"var(--bdr2)",
+  txt:"var(--txt)", txt2:"var(--txt2)", txt3:"var(--txt3)",
+  acc:"var(--acc)", accBg:"var(--acc-bg)", accBdr:"var(--acc-bdr)",
   r:"14px", rMd:"10px", rSm:"7px",
 };
 const PALETTES=[
@@ -234,14 +234,21 @@ async function callAI(ai, history, curMsg, mentions, replyTxt, isPhase2, otherRe
     const contents = buildGemHist(history, ai.id);
     contents.push({ role: "user", parts: [{ text: content }] });
     
-    const response = await genAI.models.generateContent({
-      model: ai.model,
-      contents,
-      config: {
-        systemInstruction: sys,
+    try {
+      const response = await genAI.models.generateContent({
+        model: ai.model,
+        contents,
+        config: {
+          systemInstruction: sys,
+        }
+      });
+      return response.text;
+    } catch (e: any) {
+      if (e.message?.includes("429") || e.message?.includes("RESOURCE_EXHAUSTED")) {
+        throw new Error("Rate limit exceeded for this AI. Please wait about 30 seconds and click 'Retry'.");
       }
-    });
-    return response.text;
+      throw e;
+    }
   }
 
   if (!apiKey && ai.providerId !== "ollama") {
@@ -442,7 +449,7 @@ function AuthScreen({onLogin}){
 }
 
 // ── ADD AI SETTINGS PANEL ─────────────────────────────────────────────────
-function SettingsPanel({ais, onAdd, onRemove, onClose}) {
+function SettingsPanel({ais, onAdd, onRemove, onClose, theme, setTheme}) {
   const[step,setStep]=useState("grid"); // grid | configure
   const[selected,setSelected]=useState(null); // provider from catalogue
   const[apiKey,setApiKey]=useState("");
@@ -498,6 +505,21 @@ function SettingsPanel({ais, onAdd, onRemove, onClose}) {
 
     <div className="sc" style={{flex:1,overflowY:"auto",padding:"14px"}}>
       {step==="grid"&&<>
+        <div style={{marginBottom:"20px"}}>
+          <div style={{fontSize:"11px",color:C.txt3,fontWeight:"500",letterSpacing:".06em",textTransform:"uppercase",marginBottom:"8px",display:"flex",alignItems:"center",gap:"6px"}}><Sparkles size={12}/> Appearance</div>
+          <div style={{display:"flex", gap:"8px", flexWrap:"wrap"}}>
+            <button onClick={() => setTheme("dark")} style={{flex:1, minWidth:"80px", padding:"10px", borderRadius:C.rSm, border:`1px solid ${theme==="dark"?C.acc:C.bdr}`, background:theme==="dark"?C.accBg:C.surf, color:theme==="dark"?C.acc:C.txt2, fontSize:"12px", cursor:"pointer", transition:"all .15s"}}>
+              Dark
+            </button>
+            <button onClick={() => setTheme("midnight")} style={{flex:1, minWidth:"80px", padding:"10px", borderRadius:C.rSm, border:`1px solid ${theme==="midnight"?C.acc:C.bdr}`, background:theme==="midnight"?C.accBg:C.surf, color:theme==="midnight"?C.acc:C.txt2, fontSize:"12px", cursor:"pointer", transition:"all .15s"}}>
+              Midnight
+            </button>
+            <button onClick={() => setTheme("forest")} style={{flex:1, minWidth:"80px", padding:"10px", borderRadius:C.rSm, border:`1px solid ${theme==="forest"?C.acc:C.bdr}`, background:theme==="forest"?C.accBg:C.surf, color:theme==="forest"?C.acc:C.txt2, fontSize:"12px", cursor:"pointer", transition:"all .15s"}}>
+              Forest
+            </button>
+          </div>
+        </div>
+
         {ais.length>0&&<>
           <div style={{fontSize:"11px",color:C.txt3,fontWeight:"500",letterSpacing:".06em",textTransform:"uppercase",marginBottom:"8px",display:"flex",alignItems:"center",gap:"6px"}}><Bot size={12}/> Connected ({ais.length})</div>
           {ais.map((ai,i)=>{
@@ -632,6 +654,11 @@ function SettingsPanel({ais, onAdd, onRemove, onClose}) {
 function AgentSwormApp(){
   const[ready,setReady]=useState(false);
   const[user,setUser]=useState(null);
+  const[theme,setTheme]=useState(()=>{
+    const t = localStorage.getItem("as-theme")||"dark";
+    if (t !== "dark") document.body.className = `theme-${t}`;
+    return t;
+  });
   const[chats,setChats]=useState([]);
   const[activeId,setActiveId]=useState(null);
   const[search,setSearch]=useState("");
@@ -650,6 +677,11 @@ function AgentSwormApp(){
   const activeChat=chats.find(c=>c.id===activeId);
   const isLoading=Object.values(loading).some(Boolean)||phase2;
   const enabledAIs=ais.filter(a=>enabledIds.includes(a.id));
+
+  useEffect(() => {
+    localStorage.setItem("as-theme", theme);
+    document.body.className = theme === "dark" ? "" : `theme-${theme}`;
+  }, [theme]);
 
   // Auth Listener
   useEffect(() => {
@@ -972,7 +1004,7 @@ function AgentSwormApp(){
 
       <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden",position:"relative"}}>
         {showSettings&&<div style={{position:"absolute",top:0,right:0,width:360,height:"100%",zIndex:30,background:C.sideBg,borderLeft:`1px solid ${C.bdr}`,display:"flex",flexDirection:"column"}}>
-          <SettingsPanel ais={ais} onAdd={addAI} onRemove={removeAI} onClose={()=>setShowSettings(false)}/>
+          <SettingsPanel ais={ais} onAdd={addAI} onRemove={removeAI} onClose={()=>setShowSettings(false)} theme={theme} setTheme={setTheme}/>
         </div>}
 
         <div style={{padding:"9px 1rem",borderBottom:`1px solid ${C.bdr}`,background:C.sideBg,flexShrink:0,display:"flex",alignItems:"center",gap:"10px",minHeight:"48px",flexWrap:"wrap"}}>

@@ -19,6 +19,36 @@
   --acc-bdr: rgba(0, 98, 255, 0.3);
 }
 
+.theme-midnight {
+  --side-bg: #0f172a;
+  --main-bg: #1e293b;
+  --surf: #334155;
+  --surf2: #475569;
+  --bdr: rgba(255, 255, 255, 0.08);
+  --bdr2: rgba(255, 255, 255, 0.12);
+  --txt: #f1f5f9;
+  --txt2: #94a3b8;
+  --txt3: #64748b;
+  --acc: #38bdf8;
+  --acc-bg: rgba(56, 189, 248, 0.12);
+  --acc-bdr: rgba(56, 189, 248, 0.3);
+}
+
+.theme-forest {
+  --side-bg: #141a14;
+  --main-bg: #1b221b;
+  --surf: #242d24;
+  --surf2: #2e3a2e;
+  --bdr: rgba(255, 255, 255, 0.06);
+  --bdr2: rgba(255, 255, 255, 0.1);
+  --txt: #e2e8e2;
+  --txt2: #9db09d;
+  --txt3: #5c6e5c;
+  --acc: #4ade80;
+  --acc-bg: rgba(74, 222, 128, 0.12);
+  --acc-bdr: rgba(74, 222, 128, 0.3);
+}
+
 * {
   box-sizing: border-box;
   margin: 0;
