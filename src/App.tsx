@@ -616,6 +616,12 @@ function SettingsPanel({ais, onAdd, onRemove, onClose, theme, setTheme}) {
             <button onClick={() => setTheme("forest")} style={{flex:1, minWidth:"80px", padding:"10px", borderRadius:C.rSm, border:`1px solid ${theme==="forest"?C.acc:C.bdr}`, background:theme==="forest"?C.accBg:C.surf, color:theme==="forest"?C.acc:C.txt2, fontSize:"12px", cursor:"pointer", transition:"all .15s"}}>
               Forest
             </button>
+            <button onClick={() => setTheme("cyberpunk")} style={{flex:1, minWidth:"80px", padding:"10px", borderRadius:C.rSm, border:`1px solid ${theme==="cyberpunk"?C.acc:C.bdr}`, background:theme==="cyberpunk"?C.accBg:C.surf, color:theme==="cyberpunk"?C.acc:C.txt2, fontSize:"12px", cursor:"pointer", transition:"all .15s"}}>
+              Cyberpunk
+            </button>
+            <button onClick={() => setTheme("sunset")} style={{flex:1, minWidth:"80px", padding:"10px", borderRadius:C.rSm, border:`1px solid ${theme==="sunset"?C.acc:C.bdr}`, background:theme==="sunset"?C.accBg:C.surf, color:theme==="sunset"?C.acc:C.txt2, fontSize:"12px", cursor:"pointer", transition:"all .15s"}}>
+              Sunset
+            </button>
           </div>
         </div>
 

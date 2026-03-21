@@ -49,6 +49,36 @@
   --acc-bdr: rgba(74, 222, 128, 0.3);
 }
 
+.theme-cyberpunk {
+  --side-bg: #0d0221;
+  --main-bg: #0f0524;
+  --surf: #1a0b2e;
+  --surf2: #240b36;
+  --bdr: rgba(255, 0, 255, 0.1);
+  --bdr2: rgba(0, 255, 255, 0.15);
+  --txt: #f0f0f0;
+  --txt2: #b088f9;
+  --txt3: #6e44ff;
+  --acc: #ff00ff;
+  --acc-bg: rgba(255, 0, 255, 0.1);
+  --acc-bdr: rgba(255, 0, 255, 0.3);
+}
+
+.theme-sunset {
+  --side-bg: #2d1b1b;
+  --main-bg: #3d2b2b;
+  --surf: #4d3b3b;
+  --surf2: #5d4b4b;
+  --bdr: rgba(255, 127, 80, 0.1);
+  --bdr2: rgba(255, 127, 80, 0.2);
+  --txt: #fff5f0;
+  --txt2: #ffccbc;
+  --txt3: #ff8a65;
+  --acc: #ff7043;
+  --acc-bg: rgba(255, 112, 67, 0.12);
+  --acc-bdr: rgba(255, 112, 67, 0.3);
+}
+
 * {
   box-sizing: border-box;
   margin: 0;
