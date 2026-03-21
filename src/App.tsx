@@ -5,7 +5,7 @@ import {
   Copy, Check, Send, Plus, Search, Settings, LogOut, 
   ChevronLeft, ChevronRight, MessageSquare, User, Trash2, 
   MoreHorizontal, X, ArrowRight, Bot, Sparkles, AlertCircle,
-  ChevronDown, RefreshCw
+  ChevronDown, RefreshCw, XCircle
 } from 'lucide-react';
 import { 
   signInWithEmailAndPassword, 
@@ -213,63 +213,162 @@ const getSystemKey = (apiType, providerId) => {
   return null;
 };
 
-async function callAI(ai, history, curMsg, mentions, replyTxt, isPhase2, otherResp) {
+async function callAI(ai, history, curMsg, mentions, replyTxt, isPhase2, otherResp, onChunk, signal) {
   const sys = buildSys(ai.name, mentions, ai.id, isPhase2, otherResp);
   const content = (replyTxt?`[Replying to: "${replyTxt.slice(0,80)}"]\n\n`:"")+curMsg;
   const apiKey = ai.apiKey || getSystemKey(ai.apiType, ai.providerId);
-
-  if (ai.apiType==="anthropic") {
-    if (!apiKey) throw new Error("Anthropic API key is missing. Please add VITE_ANTHROPIC_API_KEY to your environment variables or provide one in settings.");
-    const msgs=buildAnthHist(history,ai.id); msgs.push({role:"user",content});
-    const r=await fetch(ai.endpoint,{method:"POST",headers:{"Content-Type":"application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true"},
-      body:JSON.stringify({model:ai.model,max_tokens:900,system:sys,messages:msgs})});
-    if(!r.ok)throw new Error(await eMsg(r));
-    const d=await r.json(); if(d.error)throw new Error(d.error.message||JSON.stringify(d.error));
-    return d.content[0].text;
-  }
   
-  if (ai.apiType==="gemini") {
-    if (!apiKey) throw new Error("Gemini API key is missing. Please add VITE_GEMINI_API_KEY to your environment variables or provide one in settings.");
-    const genAI = new GoogleGenAI({ apiKey });
-    const contents = buildGemHist(history, ai.id);
-    contents.push({ role: "user", parts: [{ text: content }] });
-    
-    try {
-      const response = await genAI.models.generateContent({
-        model: ai.model,
-        contents,
-        config: {
-          systemInstruction: sys,
-        }
+  const timeoutId = setTimeout(() => {}, 60000); // We'll handle timeout differently if needed, or just rely on signal
+
+  try {
+    if (ai.apiType==="anthropic") {
+      if (!apiKey) throw new Error("Anthropic API key is missing. Please add VITE_ANTHROPIC_API_KEY to your environment variables or provide one in settings.");
+      const msgs=buildAnthHist(history,ai.id); msgs.push({role:"user",content});
+      const r=await fetch(ai.endpoint,{
+        method:"POST",
+        signal,
+        headers:{
+          "Content-Type":"application/json", 
+          "x-api-key": apiKey, 
+          "anthropic-version": "2023-06-01", 
+          "anthropic-dangerous-direct-browser-access": "true"
+        },
+        body:JSON.stringify({
+          model:ai.model,
+          max_tokens:1024,
+          system:sys,
+          messages:msgs,
+          stream: true
+        })
       });
-      return response.text;
-    } catch (e: any) {
-      if (e.message?.includes("429") || e.message?.includes("RESOURCE_EXHAUSTED")) {
-        throw new Error("Rate limit exceeded for this AI. Please wait about 30 seconds and click 'Retry'.");
+      if(!r.ok)throw new Error(await eMsg(r));
+      
+      const reader = r.body.getReader();
+      const decoder = new TextDecoder();
+      let fullText = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunk = decoder.decode(value);
+        const lines = chunk.split("\n");
+        for (const line of lines) {
+          if (line.startsWith("data: ")) {
+            try {
+              const data = JSON.parse(line.slice(6));
+              if (data.type === "content_block_delta" && data.delta?.text) {
+                fullText += data.delta.text;
+                onChunk?.(fullText);
+              }
+            } catch (e) {}
+          }
+        }
       }
-      throw e;
+      return fullText;
     }
-  }
+    
+    if (ai.apiType==="gemini") {
+      if (!apiKey) throw new Error("Gemini API key is missing. Please add VITE_GEMINI_API_KEY to your environment variables or provide one in settings.");
+      const genAI = new GoogleGenAI({ apiKey });
+      const contents = buildGemHist(history, ai.id);
+      contents.push({ role: "user", parts: [{ text: content }] });
+      
+      try {
+        const response = await genAI.models.generateContentStream({
+          model: ai.model,
+          contents,
+          config: {
+            systemInstruction: sys,
+          }
+        });
+        
+        let fullText = "";
+        for await (const chunk of response) {
+          const text = chunk.text;
+          if (text) {
+            fullText += text;
+            onChunk?.(fullText);
+          }
+        }
+        return fullText;
+      } catch (e: any) {
+        if (e.message?.includes("429") || e.message?.includes("RESOURCE_EXHAUSTED")) {
+          throw new Error("Rate limit exceeded for this AI. Please wait about 30 seconds and click 'Retry'.");
+        }
+        throw e;
+      }
+    }
 
-  if (!apiKey && ai.providerId !== "ollama") {
-    throw new Error(`${ai.providerId?.toUpperCase() || "AI"} API key is missing. Please add it to your environment variables or settings.`);
-  }
+    if (!apiKey && ai.providerId !== "ollama") {
+      throw new Error(`${ai.providerId?.toUpperCase() || "AI"} API key is missing. Please add it to your environment variables or settings.`);
+    }
 
-  const msgs=[{role:"system",content:sys},...buildOAIHist(history,ai.id),{role:"user",content}];
-  const hdrs={"Content-Type":"application/json"};
-  if(apiKey)hdrs["Authorization"]=`Bearer ${apiKey}`;
-  const r=await fetch(ai.endpoint,{method:"POST",headers:hdrs,body:JSON.stringify({model:ai.model,max_tokens:900,messages:msgs})});
-  if(!r.ok)throw new Error(await eMsg(r));
-  const d=await r.json(); if(d.error)throw new Error(d.error.message||JSON.stringify(d.error));
-  return d.choices[0].message.content;
+    const msgs=[{role:"system",content:sys},...buildOAIHist(history,ai.id),{role:"user",content}];
+    const hdrs={"Content-Type":"application/json"};
+    if(apiKey)hdrs["Authorization"]=`Bearer ${apiKey}`;
+    const r=await fetch(ai.endpoint,{
+      method:"POST",
+      signal,
+      headers:hdrs,
+      body:JSON.stringify({
+        model:ai.model,
+        max_tokens:1024,
+        messages:msgs,
+        stream: true
+      })
+    });
+    if(!r.ok)throw new Error(await eMsg(r));
+    
+    const reader = r.body.getReader();
+    const decoder = new TextDecoder();
+    let fullText = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const chunk = decoder.decode(value);
+      const lines = chunk.split("\n");
+      for (const line of lines) {
+        const cleanLine = line.trim();
+        if (!cleanLine || cleanLine === "data: [DONE]") continue;
+        if (cleanLine.startsWith("data: ")) {
+          try {
+            const data = JSON.parse(cleanLine.slice(6));
+            const content = data.choices?.[0]?.delta?.content;
+            if (content) {
+              fullText += content;
+              onChunk?.(fullText);
+            }
+          } catch (e) {}
+        }
+      }
+    }
+    return fullText;
+  } catch (e: any) {
+    if (e.name === 'AbortError') throw new Error("Request timed out after 60 seconds.");
+    throw e;
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 async function eMsg(r){try{const d=await r.json();return d.error?.message||`HTTP ${r.status}`;}catch{return `HTTP ${r.status}`;}}
 function buildSys(nm,mentions,aiId,isPhase2,otherResp){
-  let s=`You are ${nm} in AGENTSWORM, an AI group conference where multiple AIs answer simultaneously. Be helpful and direct.`;
-  if(mentions?.includes(aiId))s+=` The user specifically @mentioned you.`;
-  else if(mentions?.length)s+=` The user @mentioned others. Still contribute but be concise.`;
-  if(isPhase2){s+=`\n\nOthers responded. Only reply if you can correct a mistake, add crucial missing info, or a meaningfully different view. 1-3 sentences max. Otherwise reply exactly: SKIP`;if(otherResp)s+=`\n\nOther responses:\n${otherResp}`;}
+  let s=`You are ${nm} in AGENTSWORM, a multi-AI group conference.
+- Be helpful, direct, and concise.
+- You are participating in a real-time discussion with other AIs.
+- If you were @mentioned, address the user directly.
+- If others were @mentioned, you can still contribute but keep it very brief.`;
+  
+  if(isPhase2){
+    s+=`\n\nPHASE 2: Other AIs have already responded. 
+- Review their answers below.
+- ONLY respond if you can:
+  a) Correct a factual error.
+  b) Add a crucial missing piece of information.
+  c) Provide a significantly different and valuable perspective.
+- Keep it to 1-3 sentences max.
+- If you have nothing important to add, reply EXACTLY with the word: SKIP`;
+    if(otherResp) s+=`\n\nOther responses:\n${otherResp}`;
+  }
   return s;
 }
 function buildTurns(h){const t=[];let c=null;for(const m of h){if(m.type==="user"){if(c)t.push(c);c={u:m.content,gid:m.groupId,res:[]};}if(c&&(m.type==="ai"||m.type==="ai_followup")&&m.groupId===c.gid)c.res.push(m);}if(c)t.push(c);return t;}
@@ -671,6 +770,7 @@ function AgentSwormApp(){
   const[mentionQ,setMentionQ]=useState(null);
   const[showSettings,setShowSettings]=useState(false);
   const[sideOpen,setSideOpen]=useState(true);
+  const controllers = useRef<Record<string, AbortController>>({});
   const bottomRef=useRef(null);
   const taRef=useRef(null);
 
@@ -767,8 +867,10 @@ function AgentSwormApp(){
   };
 
   useEffect(() => {
-    if (!showScrollBtn) scrollToBottom();
-  }, [activeChat?.messages.length]);
+    if (!showScrollBtn) {
+      scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "auto" });
+    }
+  }, [activeChat?.messages]);
 
   const delChat = async (id) => {
     try {
@@ -786,16 +888,27 @@ function AgentSwormApp(){
     } catch (e) { handleFirestoreError(e, OperationType.UPDATE, "chats"); }
   };
 
+  const stopAI = (aiId: string) => {
+    if (controllers.current[aiId]) {
+      controllers.current[aiId].abort();
+      delete controllers.current[aiId];
+      setLoading(prev => ({ ...prev, [aiId]: false }));
+    }
+  };
+
   const regenerate = async (msg) => {
     if (!activeChat || isLoading) return;
     const ai = ais.find(a => a.id === msg.aiId);
     if (!ai) return;
 
+    const controller = new AbortController();
+    controllers.current[ai.id] = controller;
     setLoading(prev => ({ ...prev, [ai.id]: true }));
 
     const userMsg = activeChat.messages.find(m => m.groupId === msg.groupId && m.type === "user");
     if (!userMsg) {
       setLoading(prev => ({ ...prev, [ai.id]: false }));
+      delete controllers.current[ai.id];
       return;
     }
 
@@ -807,7 +920,21 @@ function AgentSwormApp(){
 
     try {
       const replyTxt = userMsg.replyToId ? activeChat.messages.find(m => m.id === userMsg.replyToId)?.content : null;
-      const resp = await callAI(ai, history, userMsg.content, userMsg.mentions, replyTxt, false, null);
+      
+      let lastUpdate = 0;
+      const resp = await callAI(ai, history, userMsg.content, userMsg.mentions, replyTxt, false, null, (chunk) => {
+        const now = Date.now();
+        if (now - lastUpdate > 500) { // Throttle Firestore updates to every 500ms
+          lastUpdate = now;
+          getDoc(doc(db, "chats", activeChat.id)).then(docSnap => {
+            if (docSnap.exists()) {
+              const chat = docSnap.data();
+              const msgs = chat.messages.map(m => m.id === msg.id ? { ...m, content: chunk, loading: true } : m);
+              setDoc(doc(db, "chats", activeChat.id), { ...chat, messages: msgs });
+            }
+          });
+        }
+      }, controller.signal);
       
       const currentChatDoc = await getDoc(doc(db, "chats", activeChat.id));
       if (currentChatDoc.exists()) {
@@ -818,6 +945,7 @@ function AgentSwormApp(){
         await setDoc(doc(db, "chats", activeChat.id), { ...currentChat, messages: updatedMessages });
       }
     } catch (e: any) {
+      if (e.name === 'AbortError') return;
       const currentChatDoc = await getDoc(doc(db, "chats", activeChat.id));
       if (currentChatDoc.exists()) {
         const currentChat = currentChatDoc.data();
@@ -828,6 +956,7 @@ function AgentSwormApp(){
       }
     } finally {
       setLoading(prev => ({ ...prev, [ai.id]: false }));
+      delete controllers.current[ai.id];
     }
   };
 
@@ -880,32 +1009,41 @@ function AgentSwormApp(){
     const p1: Record<string, {content: string | null, error: string | null}> = {};
     
     await Promise.allSettled(enabledAIs.map(async ai=>{
-      const upd=async(content: string | null, error: string | null)=>{
+      const controller = new AbortController();
+      controllers.current[ai.id] = controller;
+      
+      const upd=async(content: string | null, error: string | null, loading: boolean = false)=>{
         p1[ai.id]={content,error};
         try {
-          // Use a simple local update for UI responsiveness, but we still need to sync to Firestore
-          // To avoid race conditions, we'll use a functional update if we were using local state,
-          // but since we rely on onSnapshot, we'll just try to be as atomic as possible.
-          // Actually, the best way is to update the specific message in the array.
-          
           const currentChatDoc = await getDoc(doc(db, "chats", chatId));
           if (currentChatDoc.exists()) {
             const currentChat = currentChatDoc.data();
             const updatedMessages = currentChat.messages.map(m => 
               m.groupId === groupId && m.type === "ai" && m.aiId === ai.id 
-                ? { ...m, content, error, loading: false } 
+                ? { ...m, content, error, loading } 
                 : m
             );
             await setDoc(doc(db, "chats", chatId), { ...currentChat, messages: updatedMessages });
           }
         } catch(e) { console.error("Update error", e); }
-        setLoading(prev=>({...prev,[ai.id]:false}));
+        if (!loading) {
+          setLoading(prev=>({...prev,[ai.id]:false}));
+          delete controllers.current[ai.id];
+        }
       };
       try{
-        const resp = await callAI(ai,prevMsgs,msg,mentioned,replyTxt,false,null);
-        await upd(resp, null);
+        let lastUpdate = 0;
+        const resp = await callAI(ai,prevMsgs,msg,mentioned,replyTxt,false,null, (chunk) => {
+          const now = Date.now();
+          if (now - lastUpdate > 500) {
+            lastUpdate = now;
+            upd(chunk, null, true);
+          }
+        }, controller.signal);
+        await upd(resp, null, false);
       }catch(e: any){
-        await upd(null, e.message || String(e));
+        if (e.name === 'AbortError') return;
+        await upd(null, e.message || String(e), false);
       }
     }));
 
@@ -916,20 +1054,27 @@ function AgentSwormApp(){
         await Promise.allSettled(enabledAIs.map(async ai=>{
           if(!p1[ai.id]?.content)return;
           const others=p1Lines.filter(l=>!l.startsWith(ai.name+":")).join("\n\n");
+          
+          const controller = new AbortController();
+          controllers.current[`p2_${ai.id}`] = controller;
+          
           try{
-            const resp=await callAI(ai,prevMsgs,msg,mentioned,replyTxt,true,others);
+            const resp=await callAI(ai,prevMsgs,msg,mentioned,replyTxt,true,others, undefined, controller.signal);
             if(resp&&!resp.trim().toUpperCase().startsWith("SKIP")){
               const fu={id:gid(),type:"ai_followup",aiId:ai.id,aiName:ai.name,content:resp.replace(/^SKIP\s*/i,"").trim(),error:null,loading:false,timestamp:new Date().toISOString(),groupId};
               const currentChatDoc = await getDoc(doc(db, "chats", chatId));
               if (currentChatDoc.exists()) {
                 const currentChat = currentChatDoc.data();
-                // Check if this followup already exists to avoid duplicates in edge cases
                 if (!currentChat.messages.some(m => m.id === fu.id)) {
                   await setDoc(doc(db, "chats", chatId), { ...currentChat, messages: [...currentChat.messages, fu] });
                 }
               }
             }
-          }catch(e){ console.error("Phase 2 error", e); }
+          }catch(e){ 
+            if (e.name !== 'AbortError') console.error("Phase 2 error", e); 
+          } finally {
+            delete controllers.current[`p2_${ai.id}`];
+          }
         }));
       } finally {
         setPhase2(false);
@@ -1062,7 +1207,10 @@ function AgentSwormApp(){
               <div style={{display:"flex",alignItems:"center",gap:"8px",marginBottom:"5px",flexWrap:"wrap"}}>
                 <span style={{fontSize:"13px",fontWeight:"500",color:p.fg}}>{msg.aiName||ai?.name||"AI"}</span>
                 {isF&&<span style={{fontSize:"10px",padding:"1px 6px",borderRadius:"999px",background:p.bg,color:p.fg,border:`1px solid ${p.bdr}`,fontWeight:"500"}}>follow-up</span>}
-                {msg.loading&&<span style={{display:"inline-flex",alignItems:"center",gap:"2px"}}><span className="dot"/><span className="dot"/><span className="dot"/></span>}
+                {msg.loading&&<div style={{display:"inline-flex",alignItems:"center",gap:"8px"}}>
+                  <span className="dot"/><span className="dot"/><span className="dot"/>
+                  <button className="btn-mini-icon" onClick={()=>stopAI(msg.aiId)} style={{padding:"2px", color:"#f6465d"}} title="Stop"><XCircle size={14}/></button>
+                </div>}
                 {!msg.loading&&(msg.content||msg.error)&&<span style={{fontSize:"10px",color:C.txt3}}>{tStr(msg.timestamp)}</span>}
               </div>
               {msg.content&&<div className="ai-msg-box">
@@ -1109,12 +1257,20 @@ function AgentSwormApp(){
             <textarea ref={taRef} value={input} onChange={onInputChange}
               onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();send();}if(e.key==="Escape"){setMentionQ(null);setReplyTo(null);}}}
               placeholder={enabledAIs.length>0?`Message ${enabledAIs.length} AI${enabledAIs.length>1?"s":""} · @ to mention one`:"Connect an AI to start chatting"}
-              disabled={isLoading||enabledAIs.length===0} rows={2} className="inp"
+              disabled={enabledAIs.length===0} rows={2} className="inp"
               style={{flex:1,resize:"none",fontSize:"14px",lineHeight:"1.6",padding:"11px 14px",fontFamily:"'Inter',sans-serif",background:C.surf}}/>
-            <button className="btn btn-acc" onClick={send} disabled={isLoading||!input.trim()||enabledAIs.length===0}
-              style={{padding:"11px 22px",fontSize:"14px",fontWeight:"500",whiteSpace:"nowrap",alignSelf:"stretch",borderRadius:C.rSm,display:"flex",alignItems:"center",gap:"8px"}}>
-              {isLoading?"…":<><Send size={18}/> Send</>}
-            </button>
+            <div style={{display:"flex", flexDirection:"column", gap:"4px"}}>
+              <button className="btn btn-acc" onClick={send} disabled={isLoading||!input.trim()||enabledAIs.length===0}
+                style={{padding:"11px 22px",fontSize:"14px",fontWeight:"500",whiteSpace:"nowrap",alignSelf:"stretch",borderRadius:C.rSm,display:"flex",alignItems:"center",gap:"8px"}}>
+                {isLoading?"…":<><Send size={18}/> Send</>}
+              </button>
+              {isLoading && (
+                <button className="btn btn-ghost" onClick={() => Object.keys(controllers.current).forEach(stopAI)} 
+                  style={{padding:"4px", fontSize:"10px", color:"#f6465d", border:`1px solid rgba(246,70,93,.2)`}}>
+                  Stop All
+                </button>
+              )}
+            </div>
           </div>
           <div style={{fontSize:"11px",color:C.txt3,marginTop:"7px",display:"flex",gap:"10px",flexWrap:"wrap"}}>
             <span>Enter to send</span><span>·</span><span>Shift+Enter new line</span><span>·</span><span>@ to mention a specific AI</span><span>·</span><span>hover a message to quote it</span>
