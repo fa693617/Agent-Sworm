@@ -138,6 +138,7 @@ const PROVIDERS_CATALOGUE = [
       {id:"o1",            label:"o1",              desc:"Advanced reasoning · complex tasks"},
       {id:"o3-mini",       label:"o3 mini",         desc:"Latest reasoning model · fast"},
     ],
+    fallbackOrder: ["gpt-4o", "gpt-4o-mini", "o3-mini"]
   },
   {
     id:"anthropic", name:"Anthropic", logo:"A", color:"#da7756", colorBg:"rgba(218,119,86,0.12)", colorBdr:"rgba(218,119,86,0.3)",
@@ -149,6 +150,7 @@ const PROVIDERS_CATALOGUE = [
       {id:"claude-3-5-sonnet-20241022",   label:"Claude 3.5 Sonnet",  desc:"Balanced · reliable · fast"},
       {id:"claude-3-5-haiku-20241022",  label:"Claude 3.5 Haiku", desc:"Fastest · most affordable"},
     ],
+    fallbackOrder: ["claude-3-7-sonnet-20250219", "claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022"]
   },
   {
     id:"google", name:"Google Gemini", logo:"G", color:"#5b9cf5", colorBg:"rgba(91,156,245,0.12)", colorBdr:"rgba(91,156,245,0.3)",
@@ -161,6 +163,7 @@ const PROVIDERS_CATALOGUE = [
       {id:"gemini-1.5-flash",   label:"Gemini 1.5 Flash",   desc:"Stable · very fast · free tier"},
       {id:"gemini-2.0-flash-thinking-exp", label:"Gemini 2.0 Thinking", desc:"Experimental reasoning model"},
     ],
+    fallbackOrder: ["gemini-2.0-flash", "gemini-1.5-flash"]
   },
   {
     id:"groq", name:"Groq", logo:"G", color:"#c9a03a", colorBg:"rgba(201,160,58,0.12)", colorBdr:"rgba(201,160,58,0.3)",
@@ -172,6 +175,7 @@ const PROVIDERS_CATALOGUE = [
       {id:"llama-3.1-8b-instant",     label:"Llama 3.1 8B",    desc:"Instant responses · great for quick tasks"},
       {id:"mixtral-8x7b-32768",       label:"Mixtral 8x7B",    desc:"Good balance · open weights"},
     ],
+    fallbackOrder: ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768"]
   },
   {
     id:"deepseek", name:"DeepSeek", logo:"D", color:"#3ecfcf", colorBg:"rgba(62,207,207,0.12)", colorBdr:"rgba(62,207,207,0.3)",
@@ -182,6 +186,7 @@ const PROVIDERS_CATALOGUE = [
       {id:"deepseek-chat",      label:"DeepSeek V3",      desc:"Best everyday model · very affordable"},
       {id:"deepseek-reasoner",  label:"DeepSeek R1",      desc:"Advanced reasoning · matches o1"},
     ],
+    fallbackOrder: ["deepseek-chat", "deepseek-reasoner"]
   },
   {
     id:"ollama", name:"Ollama (Local)", logo:"◎", color:"#999", colorBg:"rgba(153,153,153,0.12)", colorBdr:"rgba(153,153,153,0.3)",
@@ -204,6 +209,15 @@ const chatLabel = msgs => {
 };
 
 // ── API calls ─────────────────────────────────────────────────────────────
+const guessProvider = (key: string) => {
+  if (key.startsWith("sk-ant-")) return PROVIDERS_CATALOGUE.find(p => p.id === "anthropic");
+  if (key.startsWith("sk-")) return PROVIDERS_CATALOGUE.find(p => p.id === "openai");
+  if (key.startsWith("gsk_")) return PROVIDERS_CATALOGUE.find(p => p.id === "groq");
+  if (key.length === 39 && /^[a-zA-Z0-9_-]+$/.test(key)) return PROVIDERS_CATALOGUE.find(p => p.id === "google");
+  if (key.startsWith("ds-")) return PROVIDERS_CATALOGUE.find(p => p.id === "deepseek");
+  return null;
+};
+
 const getSystemKey = (apiType, providerId) => {
   if (apiType === "gemini") return import.meta.env.VITE_GEMINI_API_KEY;
   if (apiType === "anthropic") return import.meta.env.VITE_ANTHROPIC_API_KEY;
@@ -218,30 +232,121 @@ async function callAI(ai, history, curMsg, mentions, replyTxt, isPhase2, otherRe
   const content = (replyTxt?`[Replying to: "${replyTxt.slice(0,80)}"]\n\n`:"")+curMsg;
   const apiKey = ai.apiKey || getSystemKey(ai.apiType, ai.providerId);
   
-  const timeoutId = setTimeout(() => {}, 60000); // We'll handle timeout differently if needed, or just rely on signal
+  const provider = PROVIDERS_CATALOGUE.find(p => p.id === ai.providerId);
+  const modelsToTry = provider?.fallbackOrder ? [...provider.fallbackOrder] : [ai.model];
+  if (!modelsToTry.includes(ai.model)) modelsToTry.unshift(ai.model);
 
-  try {
-    if (ai.apiType==="anthropic") {
-      if (!apiKey) throw new Error("Anthropic API key is missing. Please add VITE_ANTHROPIC_API_KEY to your environment variables or provide one in settings.");
-      const msgs=buildAnthHist(history,ai.id); msgs.push({role:"user",content});
+  let lastErr = null;
+
+  for (const modelId of modelsToTry) {
+    try {
+      if (ai.apiType==="anthropic") {
+        if (!apiKey) throw new Error("Anthropic API key is missing.");
+        const msgs=buildAnthHist(history,ai.id); msgs.push({role:"user",content});
+        const r=await fetch(ai.endpoint,{
+          method:"POST",
+          signal,
+          headers:{
+            "Content-Type":"application/json", 
+            "x-api-key": apiKey, 
+            "anthropic-version": "2023-06-01", 
+            "anthropic-dangerous-direct-browser-access": "true"
+          },
+          body:JSON.stringify({
+            model: modelId,
+            max_tokens:1024,
+            system:sys,
+            messages:msgs,
+            stream: true
+          })
+        });
+        if(!r.ok) {
+          const err = await eMsg(r);
+          if (r.status === 429 || r.status === 402 || r.status === 400) {
+            console.warn(`Model ${modelId} failed (${r.status}). Trying fallback...`);
+            lastErr = err; continue;
+          }
+          throw new Error(err);
+        }
+        
+        const reader = r.body.getReader();
+        const decoder = new TextDecoder();
+        let fullText = "";
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          const chunk = decoder.decode(value);
+          const lines = chunk.split("\n");
+          for (const line of lines) {
+            if (line.startsWith("data: ")) {
+              try {
+                const data = JSON.parse(line.slice(6));
+                if (data.type === "content_block_delta" && data.delta?.text) {
+                  fullText += data.delta.text;
+                  onChunk?.(fullText);
+                }
+              } catch (e) {}
+            }
+          }
+        }
+        return fullText;
+      }
+      
+      if (ai.apiType==="gemini") {
+        if (!apiKey) throw new Error("Gemini API key is missing.");
+        const genAI = new GoogleGenAI({ apiKey });
+        const contents = buildGemHist(history, ai.id);
+        contents.push({ role: "user", parts: [{ text: content }] });
+        
+        try {
+          const response = await genAI.models.generateContentStream({
+            model: modelId,
+            contents,
+            config: { systemInstruction: sys }
+          });
+          
+          let fullText = "";
+          for await (const chunk of response) {
+            const text = chunk.text;
+            if (text) {
+              fullText += text;
+              onChunk?.(fullText);
+            }
+          }
+          return fullText;
+        } catch (e: any) {
+          if (e.message?.includes("429") || e.message?.includes("RESOURCE_EXHAUSTED")) {
+            console.warn(`Model ${modelId} failed (Rate Limit). Trying fallback...`);
+            lastErr = e.message; continue;
+          }
+          throw e;
+        }
+      }
+
+      if (!apiKey && ai.providerId !== "ollama") throw new Error("API key is missing.");
+
+      const msgs=[{role:"system",content:sys},...buildOAIHist(history,ai.id),{role:"user",content}];
+      const hdrs={"Content-Type":"application/json"};
+      if(apiKey)hdrs["Authorization"]=`Bearer ${apiKey}`;
       const r=await fetch(ai.endpoint,{
         method:"POST",
         signal,
-        headers:{
-          "Content-Type":"application/json", 
-          "x-api-key": apiKey, 
-          "anthropic-version": "2023-06-01", 
-          "anthropic-dangerous-direct-browser-access": "true"
-        },
+        headers:hdrs,
         body:JSON.stringify({
-          model:ai.model,
+          model: modelId,
           max_tokens:1024,
-          system:sys,
           messages:msgs,
           stream: true
         })
       });
-      if(!r.ok)throw new Error(await eMsg(r));
+      if(!r.ok) {
+        const err = await eMsg(r);
+        if (r.status === 429 || r.status === 402 || r.status === 400) {
+          console.warn(`Model ${modelId} failed (${r.status}). Trying fallback...`);
+          lastErr = err; continue;
+        }
+        throw new Error(err);
+      }
       
       const reader = r.body.getReader();
       const decoder = new TextDecoder();
@@ -252,11 +357,14 @@ async function callAI(ai, history, curMsg, mentions, replyTxt, isPhase2, otherRe
         const chunk = decoder.decode(value);
         const lines = chunk.split("\n");
         for (const line of lines) {
-          if (line.startsWith("data: ")) {
+          const cleanLine = line.trim();
+          if (!cleanLine || cleanLine === "data: [DONE]") continue;
+          if (cleanLine.startsWith("data: ")) {
             try {
-              const data = JSON.parse(line.slice(6));
-              if (data.type === "content_block_delta" && data.delta?.text) {
-                fullText += data.delta.text;
+              const data = JSON.parse(cleanLine.slice(6));
+              const content = data.choices?.[0]?.delta?.content;
+              if (content) {
+                fullText += content;
                 onChunk?.(fullText);
               }
             } catch (e) {}
@@ -264,90 +372,14 @@ async function callAI(ai, history, curMsg, mentions, replyTxt, isPhase2, otherRe
         }
       }
       return fullText;
+    } catch (e: any) {
+      if (e.name === 'AbortError') throw e;
+      console.error(`Error with model ${modelId}:`, e);
+      lastErr = e.message || String(e);
+      if (modelId === modelsToTry[modelsToTry.length - 1]) throw new Error(lastErr);
     }
-    
-    if (ai.apiType==="gemini") {
-      if (!apiKey) throw new Error("Gemini API key is missing. Please add VITE_GEMINI_API_KEY to your environment variables or provide one in settings.");
-      const genAI = new GoogleGenAI({ apiKey });
-      const contents = buildGemHist(history, ai.id);
-      contents.push({ role: "user", parts: [{ text: content }] });
-      
-      try {
-        const response = await genAI.models.generateContentStream({
-          model: ai.model,
-          contents,
-          config: {
-            systemInstruction: sys,
-          }
-        });
-        
-        let fullText = "";
-        for await (const chunk of response) {
-          const text = chunk.text;
-          if (text) {
-            fullText += text;
-            onChunk?.(fullText);
-          }
-        }
-        return fullText;
-      } catch (e: any) {
-        if (e.message?.includes("429") || e.message?.includes("RESOURCE_EXHAUSTED")) {
-          throw new Error("Rate limit exceeded for this AI. Please wait about 30 seconds and click 'Retry'.");
-        }
-        throw e;
-      }
-    }
-
-    if (!apiKey && ai.providerId !== "ollama") {
-      throw new Error(`${ai.providerId?.toUpperCase() || "AI"} API key is missing. Please add it to your environment variables or settings.`);
-    }
-
-    const msgs=[{role:"system",content:sys},...buildOAIHist(history,ai.id),{role:"user",content}];
-    const hdrs={"Content-Type":"application/json"};
-    if(apiKey)hdrs["Authorization"]=`Bearer ${apiKey}`;
-    const r=await fetch(ai.endpoint,{
-      method:"POST",
-      signal,
-      headers:hdrs,
-      body:JSON.stringify({
-        model:ai.model,
-        max_tokens:1024,
-        messages:msgs,
-        stream: true
-      })
-    });
-    if(!r.ok)throw new Error(await eMsg(r));
-    
-    const reader = r.body.getReader();
-    const decoder = new TextDecoder();
-    let fullText = "";
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      const chunk = decoder.decode(value);
-      const lines = chunk.split("\n");
-      for (const line of lines) {
-        const cleanLine = line.trim();
-        if (!cleanLine || cleanLine === "data: [DONE]") continue;
-        if (cleanLine.startsWith("data: ")) {
-          try {
-            const data = JSON.parse(cleanLine.slice(6));
-            const content = data.choices?.[0]?.delta?.content;
-            if (content) {
-              fullText += content;
-              onChunk?.(fullText);
-            }
-          } catch (e) {}
-        }
-      }
-    }
-    return fullText;
-  } catch (e: any) {
-    if (e.name === 'AbortError') throw new Error("Request timed out after 60 seconds.");
-    throw e;
-  } finally {
-    clearTimeout(timeoutId);
   }
+  throw new Error(lastErr || "All models failed");
 }
 
 async function eMsg(r){try{const d=await r.json();return d.error?.message||`HTTP ${r.status}`;}catch{return `HTTP ${r.status}`;}}
@@ -622,6 +654,41 @@ function SettingsPanel({ais, onAdd, onRemove, onClose, theme, setTheme}) {
             <button onClick={() => setTheme("sunset")} style={{flex:1, minWidth:"80px", padding:"10px", borderRadius:C.rSm, border:`1px solid ${theme==="sunset"?C.acc:C.bdr}`, background:theme==="sunset"?C.accBg:C.surf, color:theme==="sunset"?C.acc:C.txt2, fontSize:"12px", cursor:"pointer", transition:"all .15s"}}>
               Sunset
             </button>
+          </div>
+        </div>
+
+        <div style={{marginBottom:"20px", padding:"16px", background:C.accBg, border:`1px solid ${C.accBdr}`, borderRadius:C.rMd}}>
+          <div style={{fontSize:"11px",color:C.acc,fontWeight:"600",letterSpacing:".06em",textTransform:"uppercase",marginBottom:"10px",display:"flex",alignItems:"center",gap:"6px"}}><Sparkles size={12}/> Smart Connect</div>
+          <div style={{fontSize:"12px", color:C.txt2, marginBottom:"12px", lineHeight:"1.5"}}>
+            Paste any AI API key below. We'll automatically detect the provider and set up the best model with auto-fallback.
+          </div>
+          <div style={{display:"flex", gap:"8px"}}>
+            <input 
+              className="inp" 
+              placeholder="Paste API Key (sk-..., gsk_..., etc.)" 
+              value={apiKey}
+              onChange={(e) => {
+                setApiKey(e.target.value);
+                const guessed = guessProvider(e.target.value);
+                if (guessed) {
+                  const ai = {
+                    id: gid(),
+                    userId: auth.currentUser?.uid,
+                    name: `${guessed.name} (Smart)`,
+                    apiType: guessed.apiType,
+                    endpoint: guessed.endpoint,
+                    model: guessed.models[0].id,
+                    apiKey: e.target.value.trim(),
+                    colorIdx: ais.length,
+                    providerId: guessed.id,
+                  };
+                  onAdd(ai);
+                  setApiKey("");
+                  setStep("grid");
+                }
+              }}
+              style={{flex:1}}
+            />
           </div>
         </div>
 
