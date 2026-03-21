@@ -274,6 +274,7 @@ function AuthScreen({onLogin}){
   const[pw,setPw]=useState("");
   const[err,setErr]=useState("");
   const[busy,setBusy]=useState(false);
+  const[showDebug,setShowDebug]=useState(false);
 
   const submit=async()=>{
     setErr("");if(busy)return;
@@ -293,9 +294,14 @@ function AuthScreen({onLogin}){
         onLogin(uDoc.exists() ? uDoc.data() : { id: cred.user.uid, name: cred.user.displayName, email: cred.user.email });
       }
     }catch(e: any){
-      setErr(e.message || "Authentication failed.");
+      console.error("Auth Error:", e);
+      if (e.code === 'auth/email-already-in-use') setErr("This email is already registered. Try signing in.");
+      else if (e.code === 'auth/weak-password') setErr("Password is too weak. Use at least 6 characters.");
+      else if (e.code === 'auth/invalid-email') setErr("Invalid email address format.");
+      else if (e.code === 'auth/operation-not-allowed') setErr("Email/Password login is not enabled in Firebase Console.");
+      else if (e.code === 'auth/network-request-failed') setErr("Network error. Check your internet connection.");
+      else setErr(e.message || "Authentication failed.");
     }
-    setBusy(true);
     setBusy(false);
   };
 
@@ -321,7 +327,10 @@ function AuthScreen({onLogin}){
         onLogin(uDoc.data());
       }
     } catch (e: any) {
-      setErr(e.message || "Google sign-in failed.");
+      console.error("Google Auth Error:", e);
+      if (e.code === 'auth/popup-blocked') setErr("Popup blocked! Please allow popups for this site.");
+      else if (e.code === 'auth/unauthorized-domain') setErr("This domain is not authorized in Firebase. Add 'agentsworm.netlify.app' to Authorized Domains.");
+      else setErr(e.message || "Google sign-in failed.");
     }
     setBusy(false);
   };
@@ -363,6 +372,19 @@ function AuthScreen({onLogin}){
           </svg>
           Continue with Google
         </button>
+
+        <button onClick={() => setShowDebug(!showDebug)} style={{background:"transparent", border:"none", color:C.txt3, fontSize:"10px", marginTop:"10px", cursor:"pointer", textDecoration:"underline"}}>
+          {showDebug ? "Hide Debug Info" : "Show Debug Info"}
+        </button>
+
+        {showDebug && (
+          <div style={{marginTop:"10px", padding:"10px", background:C.surf2, borderRadius:C.rSm, fontSize:"10px", color:C.txt2, textAlign:"left", wordBreak:"break-all"}}>
+            <div><strong>Project:</strong> {auth.app.options.projectId}</div>
+            <div><strong>DB ID:</strong> {db.databaseId}</div>
+            <div><strong>Domain:</strong> {auth.app.options.authDomain}</div>
+            <div style={{marginTop:"5px", color:C.acc}}>Current URL: {window.location.origin}</div>
+          </div>
+        )}
       </div>
     </div>
   </div>;

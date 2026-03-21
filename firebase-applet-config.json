@@ -1,10 +1,10 @@
 {
-  "projectId": "gen-lang-client-0287784669",
-  "appId": "1:817634339462:web:3b56a3a9aa945453007f07",
-  "apiKey": "AIzaSyBmD4w5E29hHbdCCGiMFWOTgl1RPB9ciYI",
-  "authDomain": "gen-lang-client-0287784669.firebaseapp.com",
+  "projectId": "agent-sworm",
+  "appId": "1:650852121907:web:790f0a96b76c1cde3f1246",
+  "apiKey": "AIzaSyBo5ff5Cs4X8XS8DKMrMvIl_yxyL2QQ3sQ",
+  "authDomain": "agent-sworm.firebaseapp.com",
   "firestoreDatabaseId": "ai-studio-84501517-2357-43d9-862b-3923c04c0278",
-  "storageBucket": "gen-lang-client-0287784669.firebasestorage.app",
-  "messagingSenderId": "817634339462",
+  "storageBucket": "agent-sworm.firebasestorage.app",
+  "messagingSenderId": "650852121907",
   "measurementId": ""
 }
