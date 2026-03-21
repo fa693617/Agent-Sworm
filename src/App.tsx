@@ -189,6 +189,15 @@ const PROVIDERS_CATALOGUE = [
     fallbackOrder: ["deepseek-chat", "deepseek-reasoner"]
   },
   {
+    id:"universal", name:"Universal AI", logo:"U", color:"#999", colorBg:"rgba(153,153,153,0.12)", colorBdr:"rgba(153,153,153,0.3)",
+    apiType:"openai", endpoint:"",
+    keyHint:"Works with any OpenAI-compatible API. Paste the key and we'll ask for the URL if needed.", keyLink:"",
+    about:"Connect to any AI provider in the world that uses the standard OpenAI format.",
+    models:[
+      {id:"gpt-4o", label:"Standard Model", desc:"The default model ID for this provider"},
+    ],
+  },
+  {
     id:"ollama", name:"Ollama (Local)", logo:"◎", color:"#999", colorBg:"rgba(153,153,153,0.12)", colorBdr:"rgba(153,153,153,0.3)",
     apiType:"openai", endpoint:"http://localhost:11434/v1/chat/completions",
     keyHint:"No API key needed. Install Ollama and run: ollama pull llama3", keyLink:"https://ollama.ai/",
@@ -654,22 +663,26 @@ function SettingsPanel({ais, onAdd, onRemove, onClose, theme, setTheme}) {
             <button onClick={() => setTheme("sunset")} style={{flex:1, minWidth:"80px", padding:"10px", borderRadius:C.rSm, border:`1px solid ${theme==="sunset"?C.acc:C.bdr}`, background:theme==="sunset"?C.accBg:C.surf, color:theme==="sunset"?C.acc:C.txt2, fontSize:"12px", cursor:"pointer", transition:"all .15s"}}>
               Sunset
             </button>
+            <button onClick={() => setTheme("ocean")} style={{flex:1, minWidth:"80px", padding:"10px", borderRadius:C.rSm, border:`1px solid ${theme==="ocean"?C.acc:C.bdr}`, background:theme==="ocean"?C.accBg:C.surf, color:theme==="ocean"?C.acc:C.txt2, fontSize:"12px", cursor:"pointer", transition:"all .15s"}}>
+              Ocean Deep
+            </button>
           </div>
         </div>
 
         <div style={{marginBottom:"20px", padding:"16px", background:C.accBg, border:`1px solid ${C.accBdr}`, borderRadius:C.rMd}}>
           <div style={{fontSize:"11px",color:C.acc,fontWeight:"600",letterSpacing:".06em",textTransform:"uppercase",marginBottom:"10px",display:"flex",alignItems:"center",gap:"6px"}}><Sparkles size={12}/> Smart Connect</div>
           <div style={{fontSize:"12px", color:C.txt2, marginBottom:"12px", lineHeight:"1.5"}}>
-            Paste any AI API key below. We'll automatically detect the provider and set up the best model with auto-fallback.
+            Paste any AI API key below. We'll automatically detect the provider or set up a universal connection.
           </div>
-          <div style={{display:"flex", gap:"8px"}}>
+          <div style={{display:"flex", flexDirection:"column", gap:"8px"}}>
             <input 
               className="inp" 
               placeholder="Paste API Key (sk-..., gsk_..., etc.)" 
               value={apiKey}
               onChange={(e) => {
-                setApiKey(e.target.value);
-                const guessed = guessProvider(e.target.value);
+                const val = e.target.value;
+                setApiKey(val);
+                const guessed = guessProvider(val);
                 if (guessed) {
                   const ai = {
                     id: gid(),
@@ -678,7 +691,7 @@ function SettingsPanel({ais, onAdd, onRemove, onClose, theme, setTheme}) {
                     apiType: guessed.apiType,
                     endpoint: guessed.endpoint,
                     model: guessed.models[0].id,
-                    apiKey: e.target.value.trim(),
+                    apiKey: val.trim(),
                     colorIdx: ais.length,
                     providerId: guessed.id,
                   };
@@ -689,6 +702,36 @@ function SettingsPanel({ais, onAdd, onRemove, onClose, theme, setTheme}) {
               }}
               style={{flex:1}}
             />
+            {apiKey.length > 10 && !guessProvider(apiKey) && (
+              <div style={{marginTop:"4px", padding:"10px", background:C.surf, borderRadius:C.rSm, border:`1px solid ${C.bdr2}`}}>
+                <div style={{fontSize:"11px", color:C.txt3, marginBottom:"6px"}}>Unrecognized key. Use as Universal AI?</div>
+                <div style={{display:"flex", gap:"6px"}}>
+                  <input 
+                    className="inp" 
+                    placeholder="Base URL (e.g. https://api.example.com/v1)" 
+                    id="universal-url"
+                    style={{fontSize:"11px", padding:"6px 10px"}}
+                  />
+                  <button className="btn btn-acc" style={{fontSize:"11px", padding:"6px 10px"}} onClick={() => {
+                    const url = (document.getElementById("universal-url") as HTMLInputElement).value;
+                    const ai = {
+                      id: gid(),
+                      userId: auth.currentUser?.uid,
+                      name: "Universal AI",
+                      apiType: "openai",
+                      endpoint: url.trim() + (url.endsWith("/") ? "chat/completions" : "/chat/completions"),
+                      model: "gpt-4o", // Default model ID for generic APIs
+                      apiKey: apiKey.trim(),
+                      colorIdx: ais.length,
+                      providerId: "universal",
+                    };
+                    onAdd(ai);
+                    setApiKey("");
+                    setStep("grid");
+                  }}>Connect</button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
