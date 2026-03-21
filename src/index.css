@@ -227,3 +227,88 @@ select.inp option {
   transition: width .2s ease, opacity .2s ease, border .2s ease;
   overflow: hidden;
 }
+
+.ai-msg-box {
+  background: var(--surf);
+  border: 1px solid var(--bdr);
+  border-radius: 4px 14px 14px 14px;
+  padding: 12px 16px;
+  position: relative;
+}
+.msg-actions {
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+.msg-wrap:hover .msg-actions {
+  opacity: 1;
+}
+.btn-mini {
+  background: var(--surf2);
+  border: 1px solid var(--bdr2);
+  color: var(--txt3);
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.2s;
+}
+.btn-mini:hover {
+  background: var(--bdr2);
+  color: var(--txt);
+}
+
+.markdown-body {
+  word-wrap: break-word;
+}
+.markdown-body p { margin-bottom: 0.75rem; }
+.markdown-body p:last-child { margin-bottom: 0; }
+.markdown-body code {
+  background: rgba(255,255,255,0.1);
+  padding: 2px 4px;
+  border-radius: 4px;
+  font-family: monospace;
+  font-size: 0.9em;
+}
+.markdown-body pre {
+  background: #0d0d0d;
+  padding: 1rem;
+  border-radius: 8px;
+  overflow-x: auto;
+  margin: 1rem 0;
+  border: 1px solid var(--bdr);
+}
+.markdown-body pre code {
+  background: none;
+  padding: 0;
+}
+.markdown-body ul, .markdown-body ol {
+  margin-bottom: 0.75rem;
+  padding-left: 1.5rem;
+}
+.markdown-body li { margin-bottom: 0.25rem; }
+.markdown-body h1, .markdown-body h2, .markdown-body h3 {
+  margin: 1.25rem 0 0.75rem;
+  font-weight: 600;
+  line-height: 1.25;
+}
+.markdown-body h1 { fontSize: 1.5rem; }
+.markdown-body h2 { fontSize: 1.25rem; }
+.markdown-body h3 { fontSize: 1.1rem; }
+
+@media (max-width: 768px) {
+  .sidebar {
+    position: absolute;
+    top: 0;
+    left: 0;
+    height: 100%;
+    z-index: 50;
+    box-shadow: 10px 0 30px rgba(0,0,0,0.5);
+  }
+  
+  .sidebar:not([style*="width: 0"]) {
+    width: 280px !important;
+  }
+}
