@@ -367,7 +367,8 @@ async function callAI(ai, history, curMsg, mentions, replyTxt, isPhase2, otherRe
 
       if(!r.ok) {
         const err = await eMsg(r);
-        if (r.status === 429 || r.status === 402 || r.status === 400) {
+        // Only retry on rate limits or quota issues
+        if (r.status === 429 || r.status === 402) {
           console.warn(`Model ${modelId} failed (${r.status}). Trying fallback...`);
           lastErr = err; continue;
         }
@@ -897,6 +898,7 @@ function AgentSwormApp(){
   const[activeId,setActiveId]=useState(null);
   const[search,setSearch]=useState("");
   const[input,setInput]=useState("");
+  const[globalErr,setGlobalErr]=useState<string|null>(null);
   const[ais,setAis]=useState([]);
   const[enabledIds,setEnabledIds]=useState([]);
   const[loading,setLoading]=useState({});
@@ -1136,7 +1138,12 @@ function AgentSwormApp(){
     try {
       await setDoc(doc(db, "chats", chatId), updChat);
       setActiveId(chatId);
-    } catch (e) { handleFirestoreError(e, OperationType.WRITE, "chats"); }
+    } catch (e: any) { 
+      const errStr = e.message || String(e);
+      setGlobalErr(`Failed to start chat: ${errStr}`);
+      console.error("Initial write error", e);
+      return; // Stop if initial write fails
+    }
 
     const nl = {}; enabledAIs.forEach(a => nl[a.id] = true); setLoading(nl);
     const prevMsgs = (chat?.messages || []);
@@ -1157,7 +1164,13 @@ function AgentSwormApp(){
           );
           transaction.update(doc(db, "chats", chatId), { messages: updatedMessages });
         });
-      } catch (e) { console.error("Update error", e); }
+      } catch (e: any) { 
+        console.error("Update error", e);
+        // If it's a permission error, we should probably stop the AI call for this AI
+        if (e.code === 'permission-denied') {
+          throw e;
+        }
+      }
     };
 
     await Promise.allSettled(enabledAIs.map(async ai => {
@@ -1166,11 +1179,11 @@ function AgentSwormApp(){
 
       try {
         let lastUpdate = 0;
-        const resp = await callAI(ai, prevMsgs, msg, mentioned, replyTxt, false, null, (chunk) => {
+        const resp = await callAI(ai, prevMsgs, msg, mentioned, replyTxt, false, null, async (chunk) => {
           const now = Date.now();
           if (now - lastUpdate > 1000) { // Throttle updates more aggressively
             lastUpdate = now;
-            updateChatMessage(ai.id, chunk, null, true);
+            await updateChatMessage(ai.id, chunk, null, true);
           }
         }, controller.signal);
         await updateChatMessage(ai.id, resp, null, false);
@@ -1226,7 +1239,15 @@ function AgentSwormApp(){
   const filtered=chats.filter(c=>!search||chatLabel(c.messages).toLowerCase().includes(search.toLowerCase()));
 
   return (
-    <div style={{display:"flex",height:"100vh",background:C.mainBg,fontFamily:"'Inter',sans-serif",color:C.txt,overflow:"hidden"}}>
+    <>
+      {globalErr && (
+        <div style={{position:"fixed", top:"20px", left:"50%", transform:"translateX(-50%)", zIndex:1000, background:"#f6465d", color:"#fff", padding:"12px 20px", borderRadius:C.rMd, boxShadow:"0 10px 30px rgba(0,0,0,0.3)", display:"flex", alignItems:"center", gap:"12px", maxWidth:"90%", animation:"slideIn 0.3s ease"}}>
+          <AlertCircle size={20} />
+          <div style={{flex:1, fontSize:"13px", fontWeight:"500"}}>{globalErr}</div>
+          <button onClick={() => setGlobalErr(null)} style={{background:"none", border:"none", color:"#fff", cursor:"pointer", padding:"4px", display:"flex", alignItems:"center"}}><X size={16}/></button>
+        </div>
+      )}
+      <div style={{display:"flex",height:"100vh",background:C.mainBg,fontFamily:"'Inter',sans-serif",color:C.txt,overflow:"hidden"}}>
       <div className="sidebar" style={{width:sideOpen?255:0,flexShrink:0,background:C.sideBg,borderRight:sideOpen?`1px solid ${C.bdr}`:"none",display:"flex",flexDirection:"column",overflow:"hidden",opacity:sideOpen?1:0}}>
         <div style={{padding:"14px 12px 10px",flexShrink:0}}>
           <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"14px"}}>
@@ -1416,7 +1437,8 @@ function AgentSwormApp(){
         </div>
       </div>
     </div>
-  );
+  </>
+);
 }
 
 export default function App() {
