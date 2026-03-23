@@ -28,7 +28,8 @@ import {
   deleteDoc, 
   orderBy,
   limit,
-  Timestamp
+  Timestamp,
+  runTransaction
 } from "firebase/firestore";
 import { auth, db } from "./firebase";
 
@@ -252,23 +253,29 @@ async function callAI(ai, history, curMsg, mentions, replyTxt, isPhase2, otherRe
       if (ai.apiType==="anthropic") {
         if (!apiKey) throw new Error("Anthropic API key is missing.");
         const msgs=buildAnthHist(history,ai.id); msgs.push({role:"user",content});
-        const r=await fetch(ai.endpoint,{
-          method:"POST",
+        
+        const r = await fetch("/api/proxy", {
+          method: "POST",
           signal,
-          headers:{
-            "Content-Type":"application/json", 
-            "x-api-key": apiKey, 
-            "anthropic-version": "2023-06-01", 
-            "anthropic-dangerous-direct-browser-access": "true"
-          },
-          body:JSON.stringify({
-            model: modelId,
-            max_tokens:1024,
-            system:sys,
-            messages:msgs,
-            stream: true
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            url: "https://api.anthropic.com/v1/messages",
+            method: "POST",
+            headers: {
+              "x-api-key": apiKey,
+              "anthropic-version": "2023-06-01",
+              "Content-Type": "application/json"
+            },
+            body: {
+              model: modelId,
+              max_tokens: 1024,
+              system: sys,
+              messages: msgs,
+              stream: true
+            }
           })
         });
+
         if(!r.ok) {
           const err = await eMsg(r);
           if (r.status === 429 || r.status === 402 || r.status === 400) {
@@ -281,11 +288,13 @@ async function callAI(ai, history, curMsg, mentions, replyTxt, isPhase2, otherRe
         const reader = r.body.getReader();
         const decoder = new TextDecoder();
         let fullText = "";
+        let buffer = "";
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
-          const chunk = decoder.decode(value);
-          const lines = chunk.split("\n");
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() || "";
           for (const line of lines) {
             if (line.startsWith("data: ")) {
               try {
@@ -335,19 +344,27 @@ async function callAI(ai, history, curMsg, mentions, replyTxt, isPhase2, otherRe
       if (!apiKey && ai.providerId !== "ollama") throw new Error("API key is missing.");
 
       const msgs=[{role:"system",content:sys},...buildOAIHist(history,ai.id),{role:"user",content}];
-      const hdrs={"Content-Type":"application/json"};
-      if(apiKey)hdrs["Authorization"]=`Bearer ${apiKey}`;
-      const r=await fetch(ai.endpoint,{
-        method:"POST",
+      
+      const r = await fetch("/api/proxy", {
+        method: "POST",
         signal,
-        headers:hdrs,
-        body:JSON.stringify({
-          model: modelId,
-          max_tokens:1024,
-          messages:msgs,
-          stream: true
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          url: ai.endpoint,
+          method: "POST",
+          headers: apiKey ? {
+            "Authorization": `Bearer ${apiKey}`,
+            "Content-Type": "application/json"
+          } : { "Content-Type": "application/json" },
+          body: {
+            model: modelId,
+            max_tokens: 1024,
+            messages: msgs,
+            stream: true
+          }
         })
       });
+
       if(!r.ok) {
         const err = await eMsg(r);
         if (r.status === 429 || r.status === 402 || r.status === 400) {
@@ -360,11 +377,13 @@ async function callAI(ai, history, curMsg, mentions, replyTxt, isPhase2, otherRe
       const reader = r.body.getReader();
       const decoder = new TextDecoder();
       let fullText = "";
+      let buffer = "";
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        const chunk = decoder.decode(value);
-        const lines = chunk.split("\n");
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
         for (const line of lines) {
           const cleanLine = line.trim();
           if (!cleanLine || cleanLine === "data: [DONE]") continue;
@@ -1089,105 +1108,108 @@ function AgentSwormApp(){
   };
   const mentionList=mentionQ!==null?ais.filter(a=>a.name.toLowerCase().includes(mentionQ.q)):[];
 
-  const send=async()=>{
-    if(!input.trim()||isLoading||enabledAIs.length===0)return;
-    const msg=input.trim();setInput("");setReplyTo(null);setMentionQ(null);
-    let chat=activeChat;
-    const chatId=chat ? chat.id : gid();
-    const groupId=gid();
-    
+  const send = async () => {
+    if (!input.trim() || isLoading || enabledAIs.length === 0) return;
+    const msg = input.trim(); setInput(""); setReplyTo(null); setMentionQ(null);
+    let chat = activeChat;
+    const chatId = chat ? chat.id : gid();
+    const groupId = gid();
+
     // Improved mention detection for names with spaces
-    const mentioned=[];
-    const sortedAIs = [...ais].sort((a,b) => b.name.length - a.name.length);
+    const mentioned = [];
+    const sortedAIs = [...ais].sort((a, b) => b.name.length - a.name.length);
     let searchTxt = msg.toLowerCase();
-    for(const a of sortedAIs) {
-      if(searchTxt.includes("@" + a.name.toLowerCase())) {
+    for (const a of sortedAIs) {
+      if (searchTxt.includes("@" + a.name.toLowerCase())) {
         mentioned.push(a.id);
-        // Remove from searchTxt to avoid double counting if names overlap
         searchTxt = searchTxt.replace("@" + a.name.toLowerCase(), " ");
       }
     }
 
-    const replyTxt=replyTo?.content||null;
-    const userMsg={id:gid(),type:"user",content:msg,timestamp:new Date().toISOString(),groupId,replyToId:replyTo?.id||null,mentions:mentioned};
-    const placeholders=enabledAIs.map(ai=>({id:gid(),type:"ai",aiId:ai.id,aiName:ai.name,content:null,error:null,loading:true,timestamp:new Date().toISOString(),groupId}));
-    
+    const replyTxt = replyTo?.content || null;
+    const userMsg = { id: gid(), type: "user", content: msg, timestamp: new Date().toISOString(), groupId, replyToId: replyTo?.id || null, mentions: mentioned };
+    const placeholders = enabledAIs.map(ai => ({ id: gid(), type: "ai", aiId: ai.id, aiName: ai.name, content: null, error: null, loading: true, timestamp: new Date().toISOString(), groupId }));
+
     const newMessages = [...(chat?.messages || []), userMsg, ...placeholders];
     const updChat = chat ? { ...chat, messages: newMessages } : { id: chatId, userId: user.id, createdAt: new Date().toISOString(), messages: newMessages };
-    
+
     try {
       await setDoc(doc(db, "chats", chatId), updChat);
       setActiveId(chatId);
-    } catch(e) { handleFirestoreError(e, OperationType.WRITE, "chats"); }
+    } catch (e) { handleFirestoreError(e, OperationType.WRITE, "chats"); }
 
-    const nl={};enabledAIs.forEach(a=>nl[a.id]=true);setLoading(nl);
-    const prevMsgs=(chat?.messages || []);
-    const p1: Record<string, {content: string | null, error: string | null}> = {};
-    
-    await Promise.allSettled(enabledAIs.map(async ai=>{
+    const nl = {}; enabledAIs.forEach(a => nl[a.id] = true); setLoading(nl);
+    const prevMsgs = (chat?.messages || []);
+    const p1: Record<string, { content: string | null, error: string | null }> = {};
+
+    // Use a transaction-like approach to avoid race conditions when multiple AIs update the same chat
+    const updateChatMessage = async (aiId: string, content: string | null, error: string | null, loading: boolean = false) => {
+      p1[aiId] = { content, error };
+      try {
+        await runTransaction(db, async (transaction) => {
+          const chatDoc = await transaction.get(doc(db, "chats", chatId));
+          if (!chatDoc.exists()) return;
+          const currentChat = chatDoc.data();
+          const updatedMessages = currentChat.messages.map(m =>
+            m.groupId === groupId && m.type === "ai" && m.aiId === aiId
+              ? { ...m, content, error, loading }
+              : m
+          );
+          transaction.update(doc(db, "chats", chatId), { messages: updatedMessages });
+        });
+      } catch (e) { console.error("Update error", e); }
+    };
+
+    await Promise.allSettled(enabledAIs.map(async ai => {
       const controller = new AbortController();
       controllers.current[ai.id] = controller;
-      
-      const upd=async(content: string | null, error: string | null, loading: boolean = false)=>{
-        p1[ai.id]={content,error};
-        try {
-          const currentChatDoc = await getDoc(doc(db, "chats", chatId));
-          if (currentChatDoc.exists()) {
-            const currentChat = currentChatDoc.data();
-            const updatedMessages = currentChat.messages.map(m => 
-              m.groupId === groupId && m.type === "ai" && m.aiId === ai.id 
-                ? { ...m, content, error, loading } 
-                : m
-            );
-            await setDoc(doc(db, "chats", chatId), { ...currentChat, messages: updatedMessages });
-          }
-        } catch(e) { console.error("Update error", e); }
-        if (!loading) {
-          setLoading(prev=>({...prev,[ai.id]:false}));
-          delete controllers.current[ai.id];
-        }
-      };
-      try{
+
+      try {
         let lastUpdate = 0;
-        const resp = await callAI(ai,prevMsgs,msg,mentioned,replyTxt,false,null, (chunk) => {
+        const resp = await callAI(ai, prevMsgs, msg, mentioned, replyTxt, false, null, (chunk) => {
           const now = Date.now();
-          if (now - lastUpdate > 500) {
+          if (now - lastUpdate > 1000) { // Throttle updates more aggressively
             lastUpdate = now;
-            upd(chunk, null, true);
+            updateChatMessage(ai.id, chunk, null, true);
           }
         }, controller.signal);
-        await upd(resp, null, false);
-      }catch(e: any){
+        await updateChatMessage(ai.id, resp, null, false);
+      } catch (e: any) {
         if (e.name === 'AbortError') return;
-        await upd(null, e.message || String(e), false);
+        await updateChatMessage(ai.id, null, e.message || String(e), false);
+      } finally {
+        setLoading(prev => ({ ...prev, [ai.id]: false }));
+        delete controllers.current[ai.id];
       }
     }));
 
-    const p1Lines=Object.entries(p1).filter(([,v])=>v?.content).map(([id,v])=>`${ais.find(a=>a.id===id)?.name||id}: ${v.content}`);
-    if(p1Lines.length>1){
+    const p1Lines = Object.entries(p1).filter(([, v]) => v?.content).map(([id, v]) => `${ais.find(a => a.id === id)?.name || id}: ${v.content}`);
+    if (p1Lines.length > 1) {
       setPhase2(true);
       try {
-        await Promise.allSettled(enabledAIs.map(async ai=>{
-          if(!p1[ai.id]?.content)return;
-          const others=p1Lines.filter(l=>!l.startsWith(ai.name+":")).join("\n\n");
-          
+        await Promise.allSettled(enabledAIs.map(async ai => {
+          if (!p1[ai.id]?.content) return;
+          const others = p1Lines.filter(l => !l.startsWith(ai.name + ":")).join("\n\n");
+
           const controller = new AbortController();
           controllers.current[`p2_${ai.id}`] = controller;
-          
-          try{
-            const resp=await callAI(ai,prevMsgs,msg,mentioned,replyTxt,true,others, undefined, controller.signal);
-            if(resp&&!resp.trim().toUpperCase().startsWith("SKIP")){
-              const fu={id:gid(),type:"ai_followup",aiId:ai.id,aiName:ai.name,content:resp.replace(/^SKIP\s*/i,"").trim(),error:null,loading:false,timestamp:new Date().toISOString(),groupId};
-              const currentChatDoc = await getDoc(doc(db, "chats", chatId));
-              if (currentChatDoc.exists()) {
-                const currentChat = currentChatDoc.data();
+
+          try {
+            const resp = await callAI(ai, prevMsgs, msg, mentioned, replyTxt, true, others, undefined, controller.signal);
+            if (resp && !resp.trim().toUpperCase().startsWith("SKIP")) {
+              const fu = { id: gid(), type: "ai_followup", aiId: ai.id, aiName: ai.name, content: resp.replace(/^SKIP\s*/i, "").trim(), error: null, loading: false, timestamp: new Date().toISOString(), groupId };
+              
+              await runTransaction(db, async (transaction) => {
+                const chatDoc = await transaction.get(doc(db, "chats", chatId));
+                if (!chatDoc.exists()) return;
+                const currentChat = chatDoc.data();
                 if (!currentChat.messages.some(m => m.id === fu.id)) {
-                  await setDoc(doc(db, "chats", chatId), { ...currentChat, messages: [...currentChat.messages, fu] });
+                  transaction.update(doc(db, "chats", chatId), { messages: [...currentChat.messages, fu] });
                 }
-              }
+              });
             }
-          }catch(e){ 
-            if (e.name !== 'AbortError') console.error("Phase 2 error", e); 
+          } catch (e) {
+            if (e.name !== 'AbortError') console.error("Phase 2 error", e);
           } finally {
             delete controllers.current[`p2_${ai.id}`];
           }
